@@ -1,0 +1,12 @@
+# This is an example .replit file for reference
+# The actual .replit file is configured for your project
+
+# To run locally on Replit:
+# 1. Import from GitHub
+# 2. Add secrets in the Secrets tab
+# 3. Click the Run button
+
+# Required Secrets:
+# - TELEGRAM_BOT_TOKEN
+# - TELEGRAM_CHAT_ID
+# - KALSHI_API_KEY (optional)

@@ -1,0 +1,24 @@
+# Replit configuration for Polycast bot
+
+# Main run command
+run = "python src/polycast/bot.py"
+
+# Language configuration
+language = "python3"
+
+# Entry point
+entrypoint = "src/polycast/bot.py"
+
+# Hidden files in the IDE
+hidden = [".pythonlibs", ".cache", ".config", "__pycache__", "venv"]
+
+[nix]
+channel = "stable-23_11"
+
+[deployment]
+run = ["python", "src/polycast/bot.py"]
+deploymentTarget = "cloudrun"
+
+[env]
+PYTHONPATH = "/home/runner/${REPL_SLUG}/src"
+PYTHONUNBUFFERED = "1"
