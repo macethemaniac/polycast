@@ -1,0 +1,14 @@
+# Nixpacks configuration for Railway deployment
+
+[phases.setup]
+nixPkgs = ["python311", "gcc"]
+
+[phases.install]
+cmds = ["pip install --upgrade pip", "pip install -r requirements.txt"]
+
+[start]
+cmd = "python src/polycast/bot.py"
+
+[variables]
+PYTHONPATH = "/app/src"
+PYTHONUNBUFFERED = "1"

@@ -1,0 +1,21 @@
+# Fly.io deployment configuration for Polycast bot
+
+app = "polycast-bot"
+primary_region = "iad"  # Change to your nearest region
+
+[build]
+  [build.args]
+    PYTHON_VERSION = "3.11"
+
+[env]
+  PYTHONPATH = "/app/src"
+  ENVIRONMENT = "production"
+  LOG_LEVEL = "INFO"
+
+[processes]
+  app = "python src/polycast/bot.py"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256
