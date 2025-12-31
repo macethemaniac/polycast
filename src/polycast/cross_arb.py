@@ -12,6 +12,11 @@ import json
 import time
 from pathlib import Path
 
+from polycast.adapters import Market, Outcome
+from polycast.adapters import polymarket as pm_adapter
+from polycast.adapters import kalshi as kal_adapter
+from polycast.matching.engine import match_markets
+from polycast.arbitrage.engine import compute_opportunities, ArbConfig, save_opportunities, format_console_table
 from polymarket_api import fetch_polymarket_markets
 from kalshi_api import (
     fetch_kalshi_markets,
@@ -46,13 +51,13 @@ def _extract_binary_prices_from_market(market: Dict[str, Any]) -> Dict[str, floa
         return {}
 
     def _bid(o: Dict[str, Any]) -> Optional[float]:
-        for k in ('bestBid', 'bid', 'yesBid', 'noBid', 'best_bid', 'bidPrice'):
+        for k in ('bestBid', 'bid', 'yesBid', 'noBid', 'best_bid', 'bidPrice', 'price', 'lastPrice', 'midpoint'):
             if k in o and o[k] is not None:
                 return normalize_price_to_prob(o[k])
         return None
 
     def _ask(o: Dict[str, Any]) -> Optional[float]:
-        for k in ('bestAsk', 'ask', 'yesAsk', 'noAsk', 'best_ask', 'askPrice'):
+        for k in ('bestAsk', 'ask', 'yesAsk', 'noAsk', 'best_ask', 'askPrice', 'price', 'lastPrice', 'midpoint'):
             if k in o and o[k] is not None:
                 return normalize_price_to_prob(o[k])
         return None
@@ -114,30 +119,40 @@ def find_cross_market_arbitrage(
         "errors": [],
     }
 
-    pol_fetch = fetch_polymarket_markets(limit_pol, return_debug=True)
-    pol_markets, pol_meta = pol_fetch if isinstance(pol_fetch, tuple) else (pol_fetch, {})
+    # Adapter-backed market fetch with diagnostics
+    pol_markets_raw, pol_meta = fetch_polymarket_markets(limit_pol, return_debug=True)
+    pol_markets = []
+    for m in pol_markets_raw:
+        if isinstance(m, Market):
+            pol_markets.append(m.raw)
+        else:
+            pol_markets.append(m)
     debug["polymarket"] = {
-        "count": pol_meta.get("count", len(pol_markets)),
+        "count": pol_meta.get("count", len(pol_markets_raw)),
         "attempts": pol_meta.get("attempts", []),
         "error": pol_meta.get("error"),
     }
 
-    kal_fetch = fetch_kalshi_markets(limit_kal, return_debug=True)
-    kal_raw_markets, kal_meta = kal_fetch if isinstance(kal_fetch, tuple) else (kal_fetch, {})
-    debug["kalshi"] = {
-        "count": kal_meta.get("count", len(kal_raw_markets)),
-        "attempts": kal_meta.get("attempts", []),
-        "error": kal_meta.get("error"),
-    }
-
+    kal_markets_raw, kal_meta = fetch_kalshi_markets(limit_kal, return_debug=True)
     kal_markets = []
-    for m in kal_raw_markets:
+    for m in kal_markets_raw:
         if isinstance(m, dict) and m.get('outcomes'):
             kal_markets.append(m)
             continue
         converted = kalshi_market_to_generic(m)
         if converted and converted.get('outcomes'):
             kal_markets.append(converted)
+    debug["kalshi"] = {
+        "count": kal_meta.get("count", len(kal_markets_raw)) if isinstance(kal_meta, dict) else len(kal_markets_raw),
+        "attempts": kal_meta.get("attempts", []) if isinstance(kal_meta, dict) else [],
+        "error": kal_meta.get("error") if isinstance(kal_meta, dict) else None,
+    }
+
+    # Build adapter-based market lists for matching
+    pm_markets_for_match = pm_adapter.list_markets(limit=limit_pol, return_debug=False)
+    kal_markets_for_match = kal_adapter.list_markets(limit=limit_kal, return_debug=False)
+    match_results = match_markets(pm_markets_for_match, kal_markets_for_match, top_k=5, min_confidence=min_similarity)
+    debug["matching"] = match_results
     # If explicit Kalshi series IDs are provided, fetch and include them
     if kal_series_ids:
         for sid in kal_series_ids:
@@ -324,16 +339,25 @@ def find_cross_market_arbitrage(
             title = (m.get('question') or m.get('title') or m.get('slug') or '')
             pol_binaries.append((m, p, _normalize_text(title)))
 
+    kal_by_id: Dict[str, Dict[str, Any]] = {}
     kal_binaries = []
     for m in kal_markets:
         p = _extract_binary_prices_from_market(m)
         if p:
             title = (m.get('question') or m.get('title') or m.get('slug') or '')
+            mid = m.get('id') or m.get('ticker') or m.get('event_ticker') or title
+            kal_by_id[mid] = m
             kal_binaries.append((m, p, _normalize_text(title)))
 
     # Compare every pair (could be optimized with fuzzy matching)
     for pol_m, pol_p, pol_title in pol_binaries:
-        for kal_m, kal_p, kal_title in kal_binaries:
+        pm_id = pol_m.get('id') or pol_m.get('slug') or pol_m.get('title') or pol_m.get('question') or pol_title
+        candidates = match_results.get(pm_id, {}).get("matches", [])
+        allowed_ids = {c.get("kal_id") for c in candidates if c.get("kal_id")}
+        kal_candidates = [kb for kb in kal_binaries if (kb[0].get('id') or kb[0].get('ticker') or kb[0].get('event_ticker') or kb[2]) in allowed_ids] if allowed_ids else []
+        if not kal_candidates:
+            continue
+        for kal_m, kal_p, kal_title in kal_candidates:
             debug["pairs_compared"] += 1
             try:
                 seq_sim = _similarity(pol_title, kal_title)
@@ -515,6 +539,19 @@ def find_cross_market_arbitrage(
 
     opportunities.sort(key=lambda x: x['profit_pct'], reverse=True)
 
+    # New arbitrage engine scoring with orderbooks
+    arb_cfg = ArbConfig(
+        min_edge=float(os.getenv("ARB_MIN_EDGE", "0.01")),
+        min_size=float(os.getenv("ARB_MIN_SIZE", "0")),
+        max_staleness=int(os.getenv("ARB_MAX_STALENESS", "3600")),
+        fee_buy=float(os.getenv("ARB_FEE_BUY", "0.005")),
+        fee_sell=float(os.getenv("ARB_FEE_SELL", "0.005")),
+        slippage=float(os.getenv("ARB_SLIPPAGE", "0.01")),
+    )
+    opps, rejection_counts = compute_opportunities(match_results, arb_cfg)
+    debug["new_engine_opps"] = opps
+    debug["rejection_counts"] = rejection_counts
+
     if candidates_log:
         debug["candidates"] = candidates_log
 
@@ -532,8 +569,9 @@ def find_cross_market_arbitrage(
                     json.dump(
                         {
                             "debug": debug,
-                            "opportunities_count": len(opportunities),
+                            "opportunities_count": len(opps),
                             "pairs_compared": debug.get("pairs_compared"),
+                            "rejection_counts": rejection_counts,
                         },
                         f,
                         indent=2,
@@ -543,6 +581,16 @@ def find_cross_market_arbitrage(
             except Exception as exc:
                 debug["debug_file_error"] = str(exc)
 
+    # Save and print console table if not in collect_debug-only mode
+    if dump_debug:
+        try:
+            ts = int(time.time())
+            out_path = (Path(__file__).resolve().parents[1] / "outputs") / f"opps_{ts}.json"
+            save_opportunities(opps, out_path)
+            debug["opps_file"] = str(out_path)
+        except Exception as exc:
+            debug["opps_file_error"] = str(exc)
+
     if collect_debug:
-        return opportunities, debug
-    return opportunities
+        return opps, debug
+    return opps

@@ -6,68 +6,19 @@ detect binary (YES/NO) arbitrage opportunities.
 from typing import List, Dict, Any, Tuple
 import time
 import requests
+from polycast.adapters import Market
+from polycast.adapters import polymarket as pm_adapter
 
 
 def fetch_polymarket_markets(limit: int, return_debug: bool = False) -> List[Dict[str, Any]] | Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
-    Fetch public markets from the Polymarket Gamma REST endpoint.
-
-    Args:
-        limit: maximum number of markets to request
-        return_debug: when True, also return diagnostic info about the request
-
-    Returns:
-        List of market dictionaries (may be empty on error)
+    Fetch public markets from the Polymarket Gamma REST endpoint (adapter-backed).
     """
-    url = f"https://gamma-api.polymarket.com/markets?closed=false&limit={limit}"
-    attempts = []
-    try:
-        start = time.monotonic()
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        latency_ms = int((time.monotonic() - start) * 1000)
-        data = resp.json()
-        attempts.append(
-            {
-                "url": url,
-                "status_code": resp.status_code,
-                "ok": True,
-                "latency_ms": latency_ms,
-            }
-        )
-
-        # flexible parsing: API may return a list or an object
-        if isinstance(data, dict):
-            # common shapes: {'markets': [...] } or {'data': [...] }
-            if 'markets' in data and isinstance(data['markets'], list):
-                markets = data['markets']
-                return (markets, {"attempts": attempts, "count": len(markets)}) if return_debug else markets
-            if 'data' in data and isinstance(data['data'], list):
-                markets = data['data']
-                return (markets, {"attempts": attempts, "count": len(markets)}) if return_debug else markets
-            # fallback: try to find a list value
-            for v in data.values():
-                if isinstance(v, list):
-                    markets = v
-                    return (markets, {"attempts": attempts, "count": len(markets)}) if return_debug else markets
-            return ([], {"attempts": attempts, "count": 0}) if return_debug else []
-
-        if isinstance(data, list):
-            markets = data
-            return (markets, {"attempts": attempts, "count": len(markets)}) if return_debug else markets
-
-        return ([], {"attempts": attempts, "count": 0}) if return_debug else []
-    except requests.RequestException as exc:
-        attempts.append(
-            {
-                "url": url,
-                "status_code": None,
-                "ok": False,
-                "error": str(exc),
-                "latency_ms": int((time.monotonic() - start) * 1000) if 'start' in locals() else None,
-            }
-        )
-        return ([], {"attempts": attempts, "count": 0, "error": str(exc)}) if return_debug else []
+    markets, meta = pm_adapter.list_markets(limit=limit, return_debug=True)
+    raw_list = [m.raw for m in markets if isinstance(m, Market)]
+    if return_debug:
+        return raw_list, {"attempts": meta.get("attempts", []), "count": meta.get("count", len(raw_list)), "error": meta.get("error")}
+    return raw_list
 
 
 def find_polymarket_arbitrage(limit: int = 50) -> List[Dict[str, Any]]:

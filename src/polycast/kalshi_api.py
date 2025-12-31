@@ -9,6 +9,8 @@ from typing import List, Dict, Any, Optional, Tuple
 import requests
 import os
 import time
+from polycast.adapters import Market
+from polycast.adapters import kalshi as kal_adapter
 
 
 def _get_kalshi_headers() -> Dict[str, str]:
@@ -31,63 +33,11 @@ def fetch_kalshi_markets(limit: int, return_debug: bool = False) -> List[Dict[st
     uses common public endpoints and is resilient to errors.
     Set KALSHI_API_KEY environment variable for authenticated access.
     """
-    headers = _get_kalshi_headers()
-
-    # common guess for public listing endpoint
-    urls = [
-        f"https://api.kalshi.com/v1/markets?limit={limit}",
-        f"https://api.elections.kalshi.com/trade-api/v2/markets?limit={limit}&status=open",
-        f"https://www.kalshi.com/api/markets?limit={limit}",
-    ]
-
-    attempts = []
-    for url in urls:
-        try:
-            start = time.monotonic()
-            resp = requests.get(url, headers=headers, timeout=10)
-            resp.raise_for_status()
-            latency_ms = int((time.monotonic() - start) * 1000)
-            attempts.append(
-                {
-                    "url": url,
-                    "status_code": resp.status_code,
-                    "ok": True,
-                    "latency_ms": latency_ms,
-                }
-            )
-            data = resp.json()
-
-            # try common shapes
-            if isinstance(data, dict):
-                if 'markets' in data and isinstance(data['markets'], list):
-                    markets = data['markets']
-                    return (markets, {"attempts": attempts, "count": len(markets)}) if return_debug else markets
-                if 'data' in data and isinstance(data['data'], list):
-                    markets = data['data']
-                    return (markets, {"attempts": attempts, "count": len(markets)}) if return_debug else markets
-                # sometimes API returns a list in a key
-                for v in data.values():
-                    if isinstance(v, list):
-                        markets = v
-                        return (markets, {"attempts": attempts, "count": len(markets)}) if return_debug else markets
-
-            if isinstance(data, list):
-                markets = data
-                return (markets, {"attempts": attempts, "count": len(markets)}) if return_debug else markets
-
-        except requests.RequestException as exc:
-            attempts.append(
-                {
-                    "url": url,
-                    "status_code": getattr(exc.response, "status_code", None) if hasattr(exc, "response") else None,
-                    "ok": False,
-                    "error": str(exc),
-                    "latency_ms": int((time.monotonic() - start) * 1000) if 'start' in locals() else None,
-                }
-            )
-            continue
-
-    return ([], {"attempts": attempts, "count": 0}) if return_debug else []
+    markets, meta = kal_adapter.list_markets(limit=limit, return_debug=True)
+    raw_list = [m.raw for m in markets if isinstance(m, Market)]
+    if return_debug:
+        return raw_list, {"attempts": meta.get("attempts", []), "count": meta.get("count", len(raw_list)), "error": meta.get("error")}
+    return raw_list
 
 
 def fetch_kalshi_series(series_id: str) -> Dict[str, Any]:

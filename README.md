@@ -125,3 +125,13 @@ arbitrage_mvp/
 - Uses free tier APIs (CoinGecko and DeFiLlama) with rate limits
 - Telegram bot requires a valid bot token from @BotFather
 
+## Matching review and manual overrides
+- Export match candidates for Polymarket ↔ Kalshi:  
+  `python -m bot.match_review --export-candidates outputs/match_candidates.json`
+- Pin matches manually by editing `data/manual_matches.json` (overrides NLP/matcher). Example:
+  ```json
+  {
+    "516710": { "kalshi_id": "KX12345", "kal_title": "Kalshi market title", "side": "YES" }
+  }
+  ```
+- Learned associations are stored in `data/match_memory.json` when a candidate passes the confidence threshold; future runs boost those pairs. You can promote reviewed candidates into `manual_matches.json` to pin them.

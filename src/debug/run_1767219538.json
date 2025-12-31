@@ -1,0 +1,107 @@
+{
+  "debug": {
+    "polymarket": {
+      "count": 5,
+      "attempts": [
+        {
+          "url": "https://gamma-api.polymarket.com/markets?closed=false&limit=5",
+          "status_code": 200,
+          "ok": true,
+          "latency_ms": 989
+        }
+      ],
+      "error": null
+    },
+    "kalshi": {
+      "count": 5,
+      "attempts": [
+        {
+          "url": "https://api.kalshi.com/v1/markets?limit=5",
+          "status_code": null,
+          "ok": false,
+          "error": "HTTPSConnectionPool(host='api.kalshi.com', port=443): Max retries exceeded with url: /v1/markets?limit=5 (Caused by NameResolutionError(\"HTTPSConnection(host='api.kalshi.com', port=443): Failed to resolve 'api.kalshi.com' ([Errno 11001] getaddrinfo failed)\"))",
+          "latency_ms": 11230
+        },
+        {
+          "url": "https://api.kalshi.com/v1/markets?limit=5",
+          "status_code": null,
+          "ok": false,
+          "error": "HTTPSConnectionPool(host='api.kalshi.com', port=443): Max retries exceeded with url: /v1/markets?limit=5 (Caused by NameResolutionError(\"HTTPSConnection(host='api.kalshi.com', port=443): Failed to resolve 'api.kalshi.com' ([Errno 11001] getaddrinfo failed)\"))",
+          "latency_ms": 11228
+        },
+        {
+          "url": "https://api.elections.kalshi.com/trade-api/v2/markets?limit=5&status=open",
+          "status_code": 200,
+          "ok": true,
+          "latency_ms": 1035
+        },
+        {
+          "url": "https://www.kalshi.com/api/markets?limit=5",
+          "status_code": 200,
+          "ok": true,
+          "latency_ms": 1946
+        },
+        {
+          "url": "https://www.kalshi.com/api/markets?limit=5",
+          "status_code": null,
+          "ok": false,
+          "error": "Expecting value: line 1 column 1 (char 0)",
+          "latency_ms": 1947
+        },
+        {
+          "url": "https://www.kalshi.com/api/markets?limit=5",
+          "status_code": 200,
+          "ok": true,
+          "latency_ms": 1603
+        },
+        {
+          "url": "https://www.kalshi.com/api/markets?limit=5",
+          "status_code": null,
+          "ok": false,
+          "error": "Expecting value: line 1 column 1 (char 0)",
+          "latency_ms": 1603
+        }
+      ],
+      "error": null
+    },
+    "pairs_compared": 0,
+    "threshold": 1.02,
+    "min_similarity": 0.4,
+    "candidates": [],
+    "errors": [],
+    "matching": {
+      "516710": {
+        "pm_title": "US recession in 2025?",
+        "matches": [],
+        "all_top": [],
+        "reason": "LOW_CONF"
+      },
+      "516711": {
+        "pm_title": "Fed emergency rate cut in 2025?",
+        "matches": [],
+        "all_top": [],
+        "reason": "LOW_CONF"
+      },
+      "516712": {
+        "pm_title": "Tether insolvent in 2025?",
+        "matches": [],
+        "all_top": [],
+        "reason": "LOW_CONF"
+      },
+      "516713": {
+        "pm_title": "USDT depeg in 2025?",
+        "matches": [],
+        "all_top": [],
+        "reason": "LOW_CONF"
+      },
+      "516714": {
+        "pm_title": "Weed rescheduled in 2025?",
+        "matches": [],
+        "all_top": [],
+        "reason": "LOW_CONF"
+      }
+    }
+  },
+  "opportunities_count": 0,
+  "pairs_compared": 0
+}
