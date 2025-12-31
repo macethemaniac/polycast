@@ -1,6 +1,7 @@
 # Core dependencies
 requests>=2.31.0,<3.0.0
 python-telegram-bot>=20.0,<21.0
+ccxt>=4.4.0,<5.0.0
 
 # Optional: for better environment variable management
 python-dotenv>=1.0.0,<2.0.0

@@ -27,6 +27,7 @@ classifiers = [
 dependencies = [
     "requests>=2.31.0,<3.0.0",
     "python-telegram-bot>=20.0,<21.0",
+    "ccxt>=4.4.0,<5.0.0",
 ]
 
 [project.optional-dependencies]

@@ -1,6 +1,11 @@
 import sys, asyncio, json
-sys.path.insert(0, 'arbitrage_mvp/src')
+from pathlib import Path
 from types import SimpleNamespace
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'src'))
+sys.path.insert(0, str(ROOT / 'src' / 'polycast'))
+
 import bot
 
 class AsyncMsg:
@@ -99,7 +104,8 @@ async def run_all():
     await bot.alerts_command(u, c)
     results['alerts_disable'] = u.message.texts
 
-    print(json.dumps(results, indent=2, ensure_ascii=False))
+    # Force ASCII output so Windows cp1252 consoles don't choke on emoji.
+    print(json.dumps(results, indent=2, ensure_ascii=True))
 
 if __name__ == '__main__':
     asyncio.run(run_all())

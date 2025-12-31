@@ -1,12 +1,11 @@
 """
 Main entry point for the arbitrage scanner MVP.
 
-This script fetches BTC/USDT prices from CoinGecko and DeFiLlama data sources,
-performs an arbitrage check, and prints the results to the console.
+This script fetches BTC/USDT prices from CCXT exchanges, performs an arbitrage
+check, and prints the results to the console.
 """
 
-from exchanges.coingecko import get_coingecko_price
-from exchanges.defillama import get_defillama_price
+from exchanges.ccxt_client import get_ccxt_prices, DEFAULT_EXCHANGES
 from analytics.arbitrage import check_arbitrage
 
 
@@ -14,7 +13,7 @@ def main():
     """
     Main function that orchestrates the arbitrage check.
     
-    Fetches BTC/USDT prices from CoinGecko and DeFiLlama, then calculates
+    Fetches BTC/USDT prices from CCXT exchanges, then calculates
     and displays the arbitrage opportunity.
     """
     pair = 'BTC/USDT'
@@ -23,19 +22,10 @@ def main():
     print("-" * 50)
     
     try:
-        # Fetch prices from both data sources
-        coingecko_price = get_coingecko_price(pair)
-        defillama_price = get_defillama_price(pair)
-        
-        print(f"CoinGecko {pair}: ${coingecko_price:,.2f}")
-        print(f"DeFiLlama {pair}: ${defillama_price:,.2f}")
+        prices = get_ccxt_prices(pair, DEFAULT_EXCHANGES)
+        for exchange, price in prices.items():
+            print(f"{exchange} {pair}: ${price:,.2f}")
         print("-" * 50)
-        
-        # Check for arbitrage opportunity
-        prices = {
-            'coingecko': coingecko_price,
-            'defillama': defillama_price,
-        }
         
         arbitrage_result = check_arbitrage(prices)
         
@@ -62,4 +52,3 @@ def main():
 
 if __name__ == '__main__':
     exit(main())
-
