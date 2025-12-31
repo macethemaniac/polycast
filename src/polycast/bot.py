@@ -11,7 +11,7 @@ import os
 import time
 import argparse
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Any, List
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -25,6 +25,31 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+SEEN_OPPS_FILE = DATA_DIR / "seen_opps.json"
+
+
+def load_seen(prune_older_sec: int = 7 * 24 * 3600) -> Dict[str, Dict[str, float]]:
+    """Load seen opportunities, pruning entries older than prune_older_sec."""
+    try:
+        if not SEEN_OPPS_FILE.exists():
+            return {}
+        data = json.loads(SEEN_OPPS_FILE.read_text(encoding="utf-8"))
+        now_ts = time.time()
+        pruned = {k: v for k, v in data.items() if now_ts - float(v.get("ts", 0)) <= prune_older_sec}
+        if len(pruned) != len(data):
+            save_seen(pruned)
+        return pruned
+    except Exception:
+        return {}
+
+
+def save_seen(d: Dict[str, Dict[str, float]]) -> None:
+    try:
+        SEEN_OPPS_FILE.write_text(json.dumps(d, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def build_fingerprint(buy_src: str, sell_src: str, market_id: str, buy_price: float, sell_price: float) -> str:
@@ -307,9 +332,8 @@ async def crossarb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """In-chat command to enable/disable scheduled cross-arb alerts."""
     chat_id = str(update.effective_chat.id)
-    data_dir = Path(__file__).resolve().parents[1] / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    enabled_file = data_dir / "alerts_chats.json"
+    data_dir = DATA_DIR
+    enabled_file = DATA_DIR / "alerts_chats.json"
 
     enabled_chats = {}
     try:
@@ -355,14 +379,108 @@ async def alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("Usage: /alerts enable|disable|status")
 
 
+async def watch_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Enable scheduled cross-arb watch for this chat."""
+    chat_id = str(update.effective_chat.id)
+    interval = 300
+    if context.args:
+        try:
+            interval = int(context.args[0])
+        except Exception:
+            interval = 300
+
+    cooldown_sec = int(context.bot_data.get("alert_cooldown_sec", 30 * 60))
+    improve_pct = float(context.bot_data.get("alert_improve_pct", 0.5))
+
+    jq = context.job_queue
+    job_name = f"watch_{chat_id}"
+    for job in jq.get_jobs_by_name(job_name):
+        job.schedule_removal()
+
+    async def _watch_job(context: ContextTypes.DEFAULT_TYPE):
+        try:
+            opps, debug = find_cross_market_arbitrage(limit_pol=100, limit_kal=100, min_similarity=0.3, collect_debug=True)
+            if not opps:
+                return
+            seen = load_seen()
+            now_ts = int(time.time())
+            new_out: List[Dict[str, Any]] = []
+            for o in opps[:10]:
+                combo = o.get("combo", "")
+                buy_src = "polymarket" if "pol" in combo else "kalshi"
+                sell_src = "kalshi" if buy_src == "polymarket" else "polymarket"
+                market_id = f"{o.get('pm_id','')}|{o.get('kal_id','')}|{combo}"
+                buy_price = o.get("buy_ask", 0.0)
+                sell_price = o.get("sell_bid", 0.0)
+                fp = build_fingerprint(buy_src, sell_src, market_id, buy_price, sell_price)
+                edge_val = float(o.get("edge_after", 0.0)) * 100.0
+                ok, tag, prev_edge = should_alert(seen, fp, edge_val, cooldown_sec, improve_pct, now_ts)
+                if not ok:
+                    continue
+                seen[fp] = {"ts": now_ts, "edge": edge_val}
+                o["alert_tag"] = tag
+                o["prev_edge"] = prev_edge
+                new_out.append(o)
+            if new_out:
+                lines = ["<b>Scheduled Cross-market Arbitrage</b>\n"]
+                for r in new_out[:5]:
+                    tag = r.get("alert_tag", "NEW")
+                    prev_edge = r.get("prev_edge", 0.0)
+                    line = (
+                        f"[{tag}] Combo: {r.get('combo','')}\n"
+                        f"Polymarket ID: {r.get('pm_id','')}\nKalshi ID: {r.get('kal_id','')}\n"
+                        f"Edge: {r.get('edge_after',0.0):.4f}"
+                    )
+                    if tag == "IMPROVED":
+                        line += f" (prev {prev_edge:.2f}bp)"
+                    lines.append(line + "\n")
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode="HTML")
+                except Exception:
+                    pass
+                save_seen(seen)
+        except Exception:
+            return
+
+    jq.run_repeating(_watch_job, interval=interval, first=0, name=job_name)
+    await update.message.reply_text(f"Watch enabled every {interval}s.")
+
+
+async def watch_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = str(update.effective_chat.id)
+    jq = context.job_queue
+    job_name = f"watch_{chat_id}"
+    removed = False
+    for job in jq.get_jobs_by_name(job_name):
+        job.schedule_removal()
+        removed = True
+    if removed:
+        await update.message.reply_text("Watch disabled.")
+    else:
+        await update.message.reply_text("No watch was active.")
+
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = str(update.effective_chat.id)
+    jq = context.job_queue
+    job_name = f"watch_{chat_id}"
+    jobs = jq.get_jobs_by_name(job_name)
+    if jobs:
+        await update.message.reply_text("Watch is ON.")
+    else:
+        await update.message.reply_text("Watch is OFF.")
+
+
 def main() -> None:
     """Start the Telegram bot."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--alert-cooldown", type=int, default=int(os.getenv("ALERT_COOLDOWN", "30")), help="Cooldown in minutes for repeating alerts")
     parser.add_argument("--alert-improve", type=float, default=float(os.getenv("ALERT_IMPROVE", "0.005")), help="Required improvement in edge to resend within cooldown (fraction, e.g., 0.005 = 0.5%)")
+    parser.add_argument("--watch-interval", type=int, default=int(os.getenv("WATCH_INTERVAL", "300")), help="Watch interval seconds")
     args, _ = parser.parse_known_args()
     alert_cooldown_min = args.alert_cooldown
     alert_improve = args.alert_improve
+    watch_interval = args.watch_interval
 
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -374,6 +492,9 @@ def main() -> None:
         return
 
     application = Application.builder().token(bot_token).build()
+    application.bot_data["alert_cooldown_sec"] = alert_cooldown_min * 60
+    application.bot_data["alert_improve_pct"] = alert_improve * 100.0
+    application.bot_data["watch_interval"] = watch_interval
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
@@ -382,34 +503,21 @@ def main() -> None:
     application.add_handler(CommandHandler("polyarb", polyarb_command))
     application.add_handler(CommandHandler("crossarb", crossarb_command))
     application.add_handler(CommandHandler("alerts", alerts_command))
+    application.add_handler(CommandHandler("watch_on", watch_on_command))
+    application.add_handler(CommandHandler("watch_off", watch_off_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("watch_on", watch_on_command))
+    application.add_handler(CommandHandler("watch_off", watch_off_command))
+    application.add_handler(CommandHandler("status", status_command))
 
     alert_chat = os.getenv("TELEGRAM_ALERT_CHAT_ID")
     if alert_chat:
         try:
             jq = application.job_queue
 
-            data_dir = Path(__file__).resolve().parents[1] / "data"
-            data_dir.mkdir(parents=True, exist_ok=True)
-            seen_file = data_dir / "seen_opps.json"
             dedupe_ttl = int(os.getenv("TELEGRAM_ALERT_DEDUPE_TTL", "3600"))
             cooldown_sec = alert_cooldown_min * 60
             improve_pct = alert_improve * 100.0
-
-            def _load_seen() -> Dict[str, Dict[str, int]]:
-                try:
-                    if seen_file.exists():
-                        with seen_file.open("r", encoding="utf-8") as f:
-                            return json.load(f)
-                except Exception:
-                    pass
-                return {}
-
-            def _save_seen(d: Dict[str, Dict[str, int]]):
-                try:
-                    with seen_file.open("w", encoding="utf-8") as f:
-                        json.dump(d, f)
-                except Exception:
-                    pass
 
             async def _reminder_job(context: ContextTypes.DEFAULT_TYPE):
                 try:
@@ -445,7 +553,7 @@ def main() -> None:
                     if not results:
                         return
 
-                    seen = _load_seen()
+                    seen = load_seen()
                     new_out = []
                     now_ts = int(time.time())
 
@@ -465,9 +573,9 @@ def main() -> None:
                         r["prev_edge"] = prev_edge
                         new_out.append(r)
 
-                    if not new_out:
-                        _save_seen(seen)
-                        return
+                        if not new_out:
+                            save_seen(seen)
+                            return
 
                     out_lines = ["<b>Automated Cross-market Arbitrage Alert</b>\n"]
                     for r in new_out[:5]:
@@ -523,7 +631,7 @@ def main() -> None:
                     except Exception:
                         pass
 
-                    _save_seen(seen)
+                    save_seen(seen)
                 except Exception:
                     return
 
