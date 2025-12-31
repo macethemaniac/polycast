@@ -70,8 +70,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "👋 <b>Welcome to Arbitrage Scanner Bot!</b>\n\n"
         "I can help you discover arbitrage opportunities and fetch market prices.\n\n"
         "<b>Quick Commands</b>\n"
-        "• /scan — Scan BTC/USDT for arbitrage\n"
-        "• /price &lt;pair&gt; — Get prices for a pair (e.g., /price BTC/USDT)\n"
+        "• /scan [pair] — Scan a pair and cross-market arb (default BTC/USDT)\n"
+        "• /price &lt;pair&gt; — Get prices for any pair (e.g., /price BTC/USDT)\n"
         "• /polyarb — Check Polymarket for YES/NO arbitrage\n"
         "• /crossarb [min_similarity] — Cross-market scan (Polymarket ⇄ Kalshi)\n"
         "• /help — Full help and examples"
@@ -85,12 +85,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "📚 <b>Help - Arbitrage Scanner Bot</b>\n\n"
         "Use these commands to query prices and find arbitrage:\n\n"
         "• <code>/start</code> — Show the welcome message\n"
-        "• <code>/scan</code> — Scan BTC/USDT for arbitrage (CoinGecko ⇄ DeFiLlama)\n"
-        "• <code>/price &lt;pair&gt;</code> — Get prices for <code>BASE/QUOTE</code>\n"
+        "• <code>/scan [pair]</code> — Scan a pair (default BTC/USDT) and cross-market arbitrage\n"
+        "• <code>/price &lt;pair&gt;</code> — Get prices for any <code>BASE/QUOTE</code>\n"
         "• <code>/polyarb</code> — Detect internal Polymarket binary arbitrage\n"
         "• <code>/crossarb [min_similarity]</code> — Cross-market scan between Polymarket and Kalshi. Optional similarity (0-1).\n\n"
         "Examples:\n"
         "<code>/scan</code>\n"
+        "<code>/scan ETH/USDC</code>\n"
         "<code>/price BTC/USDT</code>\n"
         "<code>/crossarb 0.25</code> — run cross-arb with similarity 0.25"
     )
@@ -98,8 +99,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the /scan command - scans BTC/USDT for arbitrage."""
+    """Handle the /scan command - scans a pair and cross-market opportunities."""
     pair = 'BTC/USDT'
+    min_similarity = 0.4
+    for arg in context.args:
+        if '/' in arg:
+            pair = arg.upper()
+            continue
+        try:
+            min_similarity = float(arg)
+        except Exception:
+            continue
     
     # Send a "processing" message
     processing_msg = await update.message.reply_text(
@@ -108,25 +118,41 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     
     try:
-        # Scan for arbitrage opportunity
         arbitrage_result, error = scan_arbitrage(pair)
-        
+        spot_message = None
         if error:
-            error_message = f"❌ <b>Error:</b> {error}"
-            await processing_msg.edit_text(error_message, parse_mode='HTML')
+            spot_message = f"❌ <b>Spot scan error:</b> {error}"
             logger.error(f"Error in scan_command: {error}")
-            return
-        
-        # Format and send the result
-        message = format_arbitrage_message(
-            pair, 
-            arbitrage_result['coingecko_price'], 
-            arbitrage_result['defillama_price'], 
-            arbitrage_result
-        )
-        
+        else:
+            spot_message = format_arbitrage_message(
+                pair,
+                arbitrage_result['coingecko_price'],
+                arbitrage_result['defillama_price'],
+                arbitrage_result
+            )
+
+        cross_lines = ["🔗 <b>Cross-market Arbitrage (Polymarket ⇄ Kalshi)</b>\n"]
+        try:
+            cross_results = find_cross_market_arbitrage(
+                limit_pol=100,
+                limit_kal=100,
+                min_similarity=min_similarity
+            )
+            if not cross_results:
+                cross_lines.append("No cross-market arbitrage found right now.")
+            else:
+                for r in cross_results[:5]:
+                    cross_lines.append(
+                        f"Type: {r['type']}\nPolymarket: {r['pol_question']}\nKalshi: {r['kal_question']}\n"
+                        f"Total: {r['total']:.2f} Profit: {r['profit_pct']:.2f}%\n"
+                    )
+        except Exception as e:
+            cross_lines.append(f"❌ <b>Cross-market error:</b> {str(e)}")
+            logger.error(f"Error in scan_command (crossarb): {str(e)}", exc_info=True)
+
+        message = "\n\n".join([spot_message, "\n".join(cross_lines)])
         await processing_msg.edit_text(message, parse_mode='HTML')
-        
+
     except Exception as e:
         error_message = f"❌ <b>Error:</b> {str(e)}"
         await processing_msg.edit_text(error_message, parse_mode='HTML')
@@ -502,4 +528,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
