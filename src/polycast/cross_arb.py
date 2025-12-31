@@ -11,6 +11,7 @@ import datetime
 import json
 import time
 from pathlib import Path
+import os
 
 from polycast.adapters import Market, Outcome
 from polycast.adapters import polymarket as pm_adapter

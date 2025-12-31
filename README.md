@@ -135,3 +135,10 @@ arbitrage_mvp/
   }
   ```
 - Learned associations are stored in `data/match_memory.json` when a candidate passes the confidence threshold; future runs boost those pairs. You can promote reviewed candidates into `manual_matches.json` to pin them.
+
+## Auto-scan watch loop
+- Run periodic scans every 5 minutes (default):  
+  `python -m src.watch`
+- Custom interval (seconds):  
+  `python -m src.watch --interval 300`
+- Each cycle logs: timestamp, markets fetched, comparisons, opportunities, best edge; saves opportunities to `outputs/opps_<timestamp>.json` when found. Errors are logged and retried with backoff; overlapping runs are avoided.
