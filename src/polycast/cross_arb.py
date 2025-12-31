@@ -11,7 +11,13 @@ from typing import Optional
 import datetime
 
 from polymarket_api import fetch_polymarket_markets
-from kalshi_api import fetch_kalshi_markets, fetch_kalshi_series, series_to_market
+from kalshi_api import (
+    fetch_kalshi_markets,
+    fetch_kalshi_series,
+    fetch_kalshi_series_markets,
+    kalshi_market_to_generic,
+    series_to_market,
+)
 
 
 def _extract_binary_prices_from_market(market: Dict[str, Any]) -> Dict[str, float]:
@@ -56,7 +62,15 @@ def find_cross_market_arbitrage(limit_pol: int = 50, limit_kal: int = 50, thresh
     If total > threshold, record opportunity.
     """
     pol_markets = fetch_polymarket_markets(limit_pol)
-    kal_markets = fetch_kalshi_markets(limit_kal)
+    kal_raw_markets = fetch_kalshi_markets(limit_kal)
+    kal_markets = []
+    for m in kal_raw_markets:
+        if isinstance(m, dict) and m.get('outcomes'):
+            kal_markets.append(m)
+            continue
+        converted = kalshi_market_to_generic(m)
+        if converted and converted.get('outcomes'):
+            kal_markets.append(converted)
     # If explicit Kalshi series IDs are provided, fetch and include them
     if kal_series_ids:
         for sid in kal_series_ids:
