@@ -9,8 +9,9 @@ import json
 import logging
 import os
 import time
+import argparse
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Tuple
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -24,6 +25,34 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+
+def build_fingerprint(buy_src: str, sell_src: str, market_id: str, buy_price: float, sell_price: float) -> str:
+    """Stable fingerprint for an opportunity."""
+    rounded_buy = round(float(buy_price), 4)
+    rounded_sell = round(float(sell_price), 4)
+    payload = f"{buy_src}|{sell_src}|{market_id}|{rounded_buy}|{rounded_sell}"
+    return str(hash(payload))
+
+
+def should_alert(seen: Dict[str, Dict[str, float]], fp: str, edge: float, cooldown_sec: int, improve_threshold: float, now_ts: float) -> Tuple[bool, str, float]:
+    """
+    Decide whether to alert.
+    Returns (ok, tag, prev_edge)
+    tag is "NEW" or "IMPROVED"
+    """
+    prev = seen.get(fp)
+    if not prev:
+        return True, "NEW", 0.0
+    prev_ts = prev.get("ts", 0)
+    prev_edge = float(prev.get("edge", 0.0))
+    if now_ts - prev_ts < cooldown_sec:
+        if edge - prev_edge >= improve_threshold:
+            return True, "IMPROVED", prev_edge
+        return False, "COOLDOWN", prev_edge
+    if edge - prev_edge >= improve_threshold:
+        return True, "IMPROVED", prev_edge
+    return False, "COOLDOWN", prev_edge
 
 
 def format_arbitrage_message(pair: str, prices: Dict[str, float], arbitrage_result: Dict) -> str:
@@ -328,6 +357,13 @@ async def alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 def main() -> None:
     """Start the Telegram bot."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--alert-cooldown", type=int, default=int(os.getenv("ALERT_COOLDOWN", "30")), help="Cooldown in minutes for repeating alerts")
+    parser.add_argument("--alert-improve", type=float, default=float(os.getenv("ALERT_IMPROVE", "0.005")), help="Required improvement in edge to resend within cooldown (fraction, e.g., 0.005 = 0.5%)")
+    args, _ = parser.parse_known_args()
+    alert_cooldown_min = args.alert_cooldown
+    alert_improve = args.alert_improve
+
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
 
     if not bot_token:
@@ -354,8 +390,10 @@ def main() -> None:
 
             data_dir = Path(__file__).resolve().parents[1] / "data"
             data_dir.mkdir(parents=True, exist_ok=True)
-            seen_file = data_dir / "seen_opportunities.json"
+            seen_file = data_dir / "seen_opps.json"
             dedupe_ttl = int(os.getenv("TELEGRAM_ALERT_DEDUPE_TTL", "3600"))
+            cooldown_sec = alert_cooldown_min * 60
+            improve_pct = alert_improve * 100.0
 
             def _load_seen() -> Dict[str, Dict[str, int]]:
                 try:
@@ -412,22 +450,20 @@ def main() -> None:
                     now_ts = int(time.time())
 
                     for r in results[:20]:
-                        key = f"{r.get('type')}|{r.get('pol_question','')}|{r.get('kal_question','')}|{round(r.get('total',0),4)}"
-                        meta = seen.get(key, {})
-                        last_seen = int(meta.get("last_seen", 0))
-                        count = int(meta.get("count", 0))
-
-                        if count == 0:
-                            seen[key] = {"last_seen": now_ts, "count": 1}
-                            new_out.append(r)
+                        buy_src = "polymarket" if "pol" in r.get("type", "") else "kalshi"
+                        sell_src = "kalshi" if buy_src == "polymarket" else "polymarket"
+                        market_id = r.get("pol_question", "") or r.get("kal_question", "")
+                        buy_price = r.get("pol_yes") if "yes" in r.get("type", "") else r.get("pol_no")
+                        sell_price = r.get("kal_no") if "kal_no" in r.get("type", "") else r.get("kal_yes")
+                        fp = build_fingerprint(buy_src, sell_src, market_id, buy_price or 0.0, sell_price or 0.0)
+                        edge = float(r.get("profit_pct", 0.0))
+                        ok, tag, prev_edge = should_alert(seen, fp, edge, cooldown_sec, improve_pct, now_ts)
+                        if not ok:
                             continue
-
-                        if count == 1 and (now_ts - last_seen) >= dedupe_ttl:
-                            seen[key] = {"last_seen": now_ts, "count": 2}
-                            new_out.append(r)
-                            continue
-
-                        continue
+                        seen[fp] = {"ts": now_ts, "edge": edge}
+                        r["alert_tag"] = tag
+                        r["prev_edge"] = prev_edge
+                        new_out.append(r)
 
                     if not new_out:
                         _save_seen(seen)
@@ -435,12 +471,18 @@ def main() -> None:
 
                     out_lines = ["<b>Automated Cross-market Arbitrage Alert</b>\n"]
                     for r in new_out[:5]:
-                        out_lines.append(
-                            f"Type: {r['type']}\n"
+                        tag = r.get("alert_tag", "NEW")
+                        prev_edge = r.get("prev_edge", 0.0)
+                        line = (
+                            f"[{tag}] Type: {r['type']}\n"
                             f"Polymarket: {r['pol_question']}\n"
                             f"Kalshi: {r['kal_question']}\n"
-                            f"Total: {r['total']:.2f} Profit: {r['profit_pct']:.2f}%\n"
+                            f"Total: {r['total']:.2f} Profit: {r['profit_pct']:.2f}%"
                         )
+                        if tag == "IMPROVED":
+                            line += f" (prev {prev_edge:.2f}%)"
+                        line += "\n"
+                        out_lines.append(line)
 
                     enabled_file = data_dir / "alerts_chats.json"
                     enabled_chats = {}
@@ -470,7 +512,7 @@ def main() -> None:
                         reminder_text = "\n".join(["<b>Reminder:</b>\n"] + out_lines[1:])
                         scheduled_keys = []
                         for r in new_out:
-                            k = f"{r.get('type')}|{r.get('pol_question','')}|{r.get('kal_question','')}|{round(r.get('total',0),4)}"
+                            k = r.get("alert_tag", "") + "|" + r.get("pol_question", "") + "|" + r.get("kal_question", "")
                             scheduled_keys.append(k)
                             meta = seen.get(k, {})
                             meta.setdefault("reminder_sent", False)
