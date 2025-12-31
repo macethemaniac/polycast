@@ -4,11 +4,13 @@ This module fetches binary markets from both platforms and looks for
 cross-market mismatches, e.g. Polymarket YES vs Kalshi NO that sum
 to greater than a threshold.
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple, Union
 from difflib import SequenceMatcher
 import re
-from typing import Optional
 import datetime
+import json
+import time
+from pathlib import Path
 
 from polymarket_api import fetch_polymarket_markets
 from kalshi_api import (
@@ -20,39 +22,80 @@ from kalshi_api import (
 )
 
 
+def normalize_price_to_prob(val: Optional[float]) -> Optional[float]:
+    """Normalize a price (possibly in cents) to [0,1]."""
+    if val is None:
+        return None
+    try:
+        v = float(val)
+    except Exception:
+        return None
+    if v > 1.0:
+        v = v / 100.0
+    if v < 0:
+        v = 0.0
+    if v > 1:
+        v = 1.0
+    return v
+
+
 def _extract_binary_prices_from_market(market: Dict[str, Any]) -> Dict[str, float]:
-    """Return {'yes': float, 'no': float} or {} if cannot parse."""
+    """Return {'yes_bid','yes_ask','no_bid','no_ask'} (probs) or {} if cannot parse."""
     outcomes = market.get('outcomes') or []
     if not isinstance(outcomes, list) or len(outcomes) != 2:
         return {}
 
-    def _price(o: Dict[str, Any]):
-        for k in ('price', 'lastPrice', 'last_price', 'probability', 'midpoint'):
+    def _bid(o: Dict[str, Any]) -> Optional[float]:
+        for k in ('bestBid', 'bid', 'yesBid', 'noBid', 'best_bid', 'bidPrice'):
             if k in o and o[k] is not None:
-                try:
-                    return float(o[k])
-                except Exception:
-                    continue
+                return normalize_price_to_prob(o[k])
+        return None
+
+    def _ask(o: Dict[str, Any]) -> Optional[float]:
+        for k in ('bestAsk', 'ask', 'yesAsk', 'noAsk', 'best_ask', 'askPrice'):
+            if k in o and o[k] is not None:
+                return normalize_price_to_prob(o[k])
         return None
 
     o0, o1 = outcomes[0], outcomes[1]
     title0 = (o0.get('title') or o0.get('id') or '').lower()
     title1 = (o1.get('title') or o1.get('id') or '').lower()
-    p0 = _price(o0)
-    p1 = _price(o1)
-    if p0 is None or p1 is None:
-        return {}
 
-    # Determine mapping to yes/no
+    bids_asks = {}
+    def _set_outcome(as_yes: bool, outcome: Dict[str, Any]):
+        bid = _bid(outcome)
+        ask = _ask(outcome)
+        if as_yes:
+            bids_asks['yes_bid'] = bid
+            bids_asks['yes_ask'] = ask
+        else:
+            bids_asks['no_bid'] = bid
+            bids_asks['no_ask'] = ask
+
     if 'yes' in title0 and 'no' in title1:
-        return {'yes': p0, 'no': p1}
-    if 'no' in title0 and 'yes' in title1:
-        return {'yes': p1, 'no': p0}
-    # fallback: treat first as yes
-    return {'yes': p0, 'no': p1}
+        _set_outcome(True, o0)
+        _set_outcome(False, o1)
+    elif 'no' in title0 and 'yes' in title1:
+        _set_outcome(True, o1)
+        _set_outcome(False, o0)
+    else:
+        _set_outcome(True, o0)
+        _set_outcome(False, o1)
+
+    return bids_asks
 
 
-def find_cross_market_arbitrage(limit_pol: int = 50, limit_kal: int = 50, threshold: float = 1.02, min_similarity: float = 0.4, kal_series_ids: List[str] = None) -> List[Dict[str, Any]]:
+def find_cross_market_arbitrage(
+    limit_pol: int = 50,
+    limit_kal: int = 50,
+    threshold: float = 1.02,
+    min_similarity: float = 0.4,
+    kal_series_ids: List[str] = None,
+    collect_debug: bool = False,
+    verbose: bool = False,
+    dump_debug: bool = False,
+    debug_dir: Optional[Union[str, Path]] = None,
+) -> List[Dict[str, Any]] | Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     Find cross-market arbitrage opportunities between Polymarket and Kalshi.
 
@@ -61,8 +104,32 @@ def find_cross_market_arbitrage(limit_pol: int = 50, limit_kal: int = 50, thresh
       - pol_no + kal_yes
     If total > threshold, record opportunity.
     """
-    pol_markets = fetch_polymarket_markets(limit_pol)
-    kal_raw_markets = fetch_kalshi_markets(limit_kal)
+    debug: Dict[str, Any] = {
+        "polymarket": {},
+        "kalshi": {},
+        "pairs_compared": 0,
+        "threshold": threshold,
+        "min_similarity": min_similarity,
+        "candidates": [],
+        "errors": [],
+    }
+
+    pol_fetch = fetch_polymarket_markets(limit_pol, return_debug=True)
+    pol_markets, pol_meta = pol_fetch if isinstance(pol_fetch, tuple) else (pol_fetch, {})
+    debug["polymarket"] = {
+        "count": pol_meta.get("count", len(pol_markets)),
+        "attempts": pol_meta.get("attempts", []),
+        "error": pol_meta.get("error"),
+    }
+
+    kal_fetch = fetch_kalshi_markets(limit_kal, return_debug=True)
+    kal_raw_markets, kal_meta = kal_fetch if isinstance(kal_fetch, tuple) else (kal_fetch, {})
+    debug["kalshi"] = {
+        "count": kal_meta.get("count", len(kal_raw_markets)),
+        "attempts": kal_meta.get("attempts", []),
+        "error": kal_meta.get("error"),
+    }
+
     kal_markets = []
     for m in kal_raw_markets:
         if isinstance(m, dict) and m.get('outcomes'):
@@ -102,6 +169,38 @@ def find_cross_market_arbitrage(limit_pol: int = 50, limit_kal: int = 50, thresh
                 continue
 
     opportunities: List[Dict[str, Any]] = []
+    candidates_log: List[Dict[str, Any]] = []
+
+    def _sizes(market: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+        """Best-effort extract of bid/ask size fields (may be None)."""
+        bid_size = market.get("bid_size") or market.get("yes_size") or market.get("size")
+        ask_size = market.get("ask_size") or market.get("no_size") or market.get("size")
+        try:
+            bid_size = float(bid_size) if bid_size is not None else None
+        except Exception:
+            bid_size = None
+        try:
+            ask_size = float(ask_size) if ask_size is not None else None
+        except Exception:
+            ask_size = None
+        return bid_size, ask_size
+
+    def _is_stale(market: Dict[str, Any], max_age_seconds: int = 3600) -> bool:
+        """Heuristic to flag stale markets based on timestamp-ish fields."""
+        now = time.time()
+        for key in ("timestamp", "ts", "updated", "last_traded", "lastTraded"):
+            val = market.get(key)
+            if val is None:
+                continue
+            try:
+                ts = float(val)
+                if ts > 1e12:  # ms to seconds
+                    ts = ts / 1000.0
+                if now - ts > max_age_seconds:
+                    return True
+            except Exception:
+                continue
+        return False
 
     def _normalize_text(t: str) -> str:
         if not t:
@@ -235,55 +334,215 @@ def find_cross_market_arbitrage(limit_pol: int = 50, limit_kal: int = 50, thresh
     # Compare every pair (could be optimized with fuzzy matching)
     for pol_m, pol_p, pol_title in pol_binaries:
         for kal_m, kal_p, kal_title in kal_binaries:
+            debug["pairs_compared"] += 1
             try:
                 seq_sim = _similarity(pol_title, kal_title)
                 jacc = _jaccard(pol_title, kal_title)
                 dscore = _date_score(pol_title, kal_title)
                 # combine date score (highest weight) + sequence + token overlap
                 combined = 0.5 * dscore + 0.35 * seq_sim + 0.15 * jacc
+                reasons_base = []
                 if combined < min_similarity:
-                    continue
-                # include similarity metrics in reported results
-                # Option A: buy YES on Polymarket, sell NO on Kalshi
-                total_a = pol_p['yes'] + kal_p['no']
-                if total_a > threshold:
-                    opportunities.append({
-                        'pol_question': pol_m.get('question') or pol_m.get('title') or '',
-                        'kal_question': kal_m.get('question') or kal_m.get('title') or '',
-                        'pol_yes': pol_p['yes'],
-                        'pol_no': pol_p['no'],
-                        'kal_yes': kal_p['yes'],
-                        'kal_no': kal_p['no'],
-                        'type': 'pol_yes + kal_no',
-                        'total': total_a,
-                        'profit_pct': (total_a - 1.0) * 100.0,
-                        'title_similarity': combined,
-                        'seq_similarity': seq_sim,
-                        'jaccard_similarity': jacc,
-                        'date_score': dscore,
-                    })
+                    reasons_base.append("NO_MATCH")
+                if _is_stale(pol_m) or _is_stale(kal_m):
+                    reasons_base.append("STALE")
 
-                # Option B: buy NO on Polymarket, sell YES on Kalshi
-                total_b = pol_p['no'] + kal_p['yes']
-                if total_b > threshold:
-                    opportunities.append({
-                        'pol_question': pol_m.get('question') or pol_m.get('title') or '',
-                        'kal_question': kal_m.get('question') or kal_m.get('title') or '',
-                        'pol_yes': pol_p['yes'],
-                        'pol_no': pol_p['no'],
-                        'kal_yes': kal_p['yes'],
-                        'kal_no': kal_p['no'],
-                        'type': 'pol_no + kal_yes',
-                        'total': total_b,
-                        'profit_pct': (total_b - 1.0) * 100.0,
-                        'title_similarity': combined,
-                        'seq_similarity': seq_sim,
-                        'jaccard_similarity': jacc,
-                        'date_score': dscore,
-                    })
+                pol_yes_bid = pol_p.get("yes_bid")
+                pol_yes_ask = pol_p.get("yes_ask")
+                pol_no_bid = pol_p.get("no_bid")
+                pol_no_ask = pol_p.get("no_ask")
+                kal_yes_bid = kal_p.get("yes_bid")
+                kal_yes_ask = kal_p.get("yes_ask")
+                kal_no_bid = kal_p.get("no_bid")
+                kal_no_ask = kal_p.get("no_ask")
+                pol_bid_size, pol_ask_size = _sizes(pol_m)
+                kal_bid_size, kal_ask_size = _sizes(kal_m)
 
-            except Exception:
+                # Combo A: buy Polymarket YES (ask), sell Kalshi NO (bid)
+                buy_ask_a = pol_yes_ask
+                sell_bid_a = kal_no_bid
+                prob_buy_a = normalize_price_to_prob(buy_ask_a)
+                prob_sell_a = normalize_price_to_prob(sell_bid_a)
+                total_a = (buy_ask_a or 0) + (sell_bid_a or 0)
+                edge_a = (sell_bid_a or 0) - (buy_ask_a or 0)
+                reasons_a = list(reasons_base)
+                if buy_ask_a is None or sell_bid_a is None:
+                    reasons_a.append("NO_LIQUIDITY")
+                if prob_buy_a is None or prob_sell_a is None:
+                    reasons_a.append("NORMALIZATION_ERR")
+                if total_a <= threshold:
+                    reasons_a.append("LOW_EDGE")
+                if pol_bid_size is None or pol_ask_size is None or kal_bid_size is None or kal_ask_size is None:
+                    reasons_a.append("LOW_LIQUIDITY")
+                if not reasons_a:
+                    reasons_a.append("NONE")
+
+                cand_a = {
+                    "combo": "pol_yes+kal_no",
+                    "pol_question": pol_m.get("question") or pol_m.get("title") or "",
+                    "kal_question": kal_m.get("question") or kal_m.get("title") or "",
+                    "pol": {
+                        "best_bid": pol_yes_bid,
+                        "best_ask": pol_yes_ask,
+                        "bid_size": pol_bid_size,
+                        "ask_size": pol_ask_size,
+                        "prob_bid": normalize_price_to_prob(pol_yes_bid),
+                        "prob_ask": normalize_price_to_prob(pol_yes_ask),
+                    },
+                    "kal": {
+                        "best_bid": kal_no_bid,
+                        "best_ask": kal_no_ask,
+                        "bid_size": kal_bid_size,
+                        "ask_size": kal_ask_size,
+                        "prob_bid": normalize_price_to_prob(kal_no_bid),
+                        "prob_ask": normalize_price_to_prob(kal_no_ask),
+                    },
+                    "edge": edge_a,
+                    "total": total_a,
+                    "reasons": reasons_a or ["NONE"],
+                    "similarity": {
+                        "combined": combined,
+                        "seq": seq_sim,
+                        "jaccard": jacc,
+                        "date": dscore,
+                    },
+                }
+
+                if total_a > threshold and combined >= min_similarity:
+                    opportunities.append(
+                        {
+                            "pol_question": cand_a["pol_question"],
+                            "kal_question": cand_a["kal_question"],
+                            "pol_yes": pol_yes_ask,
+                            "pol_no": pol_no_ask,
+                            "kal_yes": kal_yes_bid,
+                            "kal_no": kal_no_bid,
+                            "type": "pol_yes + kal_no",
+                            "total": total_a,
+                            "profit_pct": (total_a - 1.0) * 100.0,
+                            "title_similarity": combined,
+                            "seq_similarity": seq_sim,
+                            "jaccard_similarity": jacc,
+                            "date_score": dscore,
+                        }
+                    )
+                candidates_log.append(cand_a)
+
+                # Combo B: buy Polymarket NO (ask), sell Kalshi YES (bid)
+                buy_ask_b = pol_no_ask
+                sell_bid_b = kal_yes_bid
+                prob_buy_b = normalize_price_to_prob(buy_ask_b)
+                prob_sell_b = normalize_price_to_prob(sell_bid_b)
+                total_b = (buy_ask_b or 0) + (sell_bid_b or 0)
+                edge_b = (sell_bid_b or 0) - (buy_ask_b or 0)
+                reasons_b = list(reasons_base)
+                if buy_ask_b is None or sell_bid_b is None:
+                    reasons_b.append("NO_LIQUIDITY")
+                if prob_buy_b is None or prob_sell_b is None:
+                    reasons_b.append("NORMALIZATION_ERR")
+                if total_b <= threshold:
+                    reasons_b.append("LOW_EDGE")
+                if pol_bid_size is None or pol_ask_size is None or kal_bid_size is None or kal_ask_size is None:
+                    reasons_b.append("LOW_LIQUIDITY")
+                if not reasons_b:
+                    reasons_b.append("NONE")
+
+                cand_b = {
+                    "combo": "pol_no+kal_yes",
+                    "pol_question": pol_m.get("question") or pol_m.get("title") or "",
+                    "kal_question": kal_m.get("question") or kal_m.get("title") or "",
+                    "pol": {
+                        "best_bid": pol_no_bid,
+                        "best_ask": pol_no_ask,
+                        "bid_size": pol_bid_size,
+                        "ask_size": pol_ask_size,
+                        "prob_bid": normalize_price_to_prob(pol_no_bid),
+                        "prob_ask": prob_buy_b,
+                    },
+                    "kal": {
+                        "best_bid": kal_yes_bid,
+                        "best_ask": kal_yes_ask,
+                        "bid_size": kal_bid_size,
+                        "ask_size": kal_ask_size,
+                        "prob_bid": prob_sell_b,
+                        "prob_ask": normalize_price_to_prob(kal_yes_ask),
+                    },
+                    "edge": edge_b,
+                    "total": total_b,
+                    "reasons": reasons_b or ["NONE"],
+                    "similarity": {
+                        "combined": combined,
+                        "seq": seq_sim,
+                        "jaccard": jacc,
+                        "date": dscore,
+                    },
+                }
+
+                if total_b > threshold and combined >= min_similarity:
+                    opportunities.append(
+                        {
+                            "pol_question": cand_b["pol_question"],
+                            "kal_question": cand_b["kal_question"],
+                            "pol_yes": pol_yes_bid,
+                            "pol_no": pol_no_ask,
+                            "kal_yes": kal_yes_bid,
+                            "kal_no": kal_no_bid,
+                            "type": "pol_no + kal_yes",
+                            "total": total_b,
+                            "profit_pct": (total_b - 1.0) * 100.0,
+                            "title_similarity": combined,
+                            "seq_similarity": seq_sim,
+                            "jaccard_similarity": jacc,
+                            "date_score": dscore,
+                        }
+                    )
+                candidates_log.append(cand_b)
+
+            except Exception as exc:
+                candidates_log.append(
+                    {
+                        "combo": "unknown",
+                        "pol_question": pol_m.get("question") or pol_m.get("title") or "",
+                        "kal_question": kal_m.get("question") or kal_m.get("title") or "",
+                        "edge": None,
+                        "total": None,
+                        "reasons": ["FETCH_FAIL"],
+                        "similarity": {},
+                        "error": str(exc),
+                    }
+                )
                 continue
 
     opportunities.sort(key=lambda x: x['profit_pct'], reverse=True)
+
+    if candidates_log:
+        debug["candidates"] = candidates_log
+
+    if dump_debug or collect_debug:
+        # keep only top 200 candidates to avoid huge payloads
+        if len(debug.get("candidates", [])) > 200:
+            debug["candidates"] = debug["candidates"][:200]
+        if dump_debug:
+            dbg_dir = Path(debug_dir) if debug_dir else Path(__file__).resolve().parents[1] / "debug"
+            dbg_dir.mkdir(parents=True, exist_ok=True)
+            ts = int(time.time())
+            dbg_path = dbg_dir / f"run_{ts}.json"
+            try:
+                with dbg_path.open("w", encoding="utf-8") as f:
+                    json.dump(
+                        {
+                            "debug": debug,
+                            "opportunities_count": len(opportunities),
+                            "pairs_compared": debug.get("pairs_compared"),
+                        },
+                        f,
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                debug["debug_file"] = str(dbg_path)
+            except Exception as exc:
+                debug["debug_file_error"] = str(exc)
+
+    if collect_debug:
+        return opportunities, debug
     return opportunities

@@ -5,9 +5,10 @@ public API may require authentication for some endpoints; this module
 tries a common endpoint and falls back cleanly to returning an empty list
 if unavailable.
 """
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import requests
 import os
+import time
 
 
 def _get_kalshi_headers() -> Dict[str, str]:
@@ -22,7 +23,7 @@ def _get_kalshi_headers() -> Dict[str, str]:
     return headers
 
 
-def fetch_kalshi_markets(limit: int) -> List[Dict[str, Any]]:
+def fetch_kalshi_markets(limit: int, return_debug: bool = False) -> List[Dict[str, Any]] | Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     Attempt to fetch Kalshi markets. Returns list of market dicts or [] on error.
 
@@ -39,30 +40,54 @@ def fetch_kalshi_markets(limit: int) -> List[Dict[str, Any]]:
         f"https://www.kalshi.com/api/markets?limit={limit}",
     ]
 
+    attempts = []
     for url in urls:
         try:
+            start = time.monotonic()
             resp = requests.get(url, headers=headers, timeout=10)
             resp.raise_for_status()
+            latency_ms = int((time.monotonic() - start) * 1000)
+            attempts.append(
+                {
+                    "url": url,
+                    "status_code": resp.status_code,
+                    "ok": True,
+                    "latency_ms": latency_ms,
+                }
+            )
             data = resp.json()
 
             # try common shapes
             if isinstance(data, dict):
                 if 'markets' in data and isinstance(data['markets'], list):
-                    return data['markets']
+                    markets = data['markets']
+                    return (markets, {"attempts": attempts, "count": len(markets)}) if return_debug else markets
                 if 'data' in data and isinstance(data['data'], list):
-                    return data['data']
+                    markets = data['data']
+                    return (markets, {"attempts": attempts, "count": len(markets)}) if return_debug else markets
                 # sometimes API returns a list in a key
                 for v in data.values():
                     if isinstance(v, list):
-                        return v
+                        markets = v
+                        return (markets, {"attempts": attempts, "count": len(markets)}) if return_debug else markets
 
             if isinstance(data, list):
-                return data
+                markets = data
+                return (markets, {"attempts": attempts, "count": len(markets)}) if return_debug else markets
 
-        except requests.RequestException:
+        except requests.RequestException as exc:
+            attempts.append(
+                {
+                    "url": url,
+                    "status_code": getattr(exc.response, "status_code", None) if hasattr(exc, "response") else None,
+                    "ok": False,
+                    "error": str(exc),
+                    "latency_ms": int((time.monotonic() - start) * 1000) if 'start' in locals() else None,
+                }
+            )
             continue
 
-    return []
+    return ([], {"attempts": attempts, "count": 0}) if return_debug else []
 
 
 def fetch_kalshi_series(series_id: str) -> Dict[str, Any]:
@@ -165,6 +190,23 @@ def fetch_kalshi_event(event_ticker: str) -> Dict[str, Any]:
         return {}
 
 
+def _norm_prob(val: Optional[float]) -> Optional[float]:
+    """Normalize a Kalshi price to probability [0,1], handling cents."""
+    if val is None:
+        return None
+    try:
+        v = float(val)
+    except Exception:
+        return None
+    if v > 1.0:
+        v = v / 100.0
+    if v < 0:
+        v = 0.0
+    if v > 1:
+        v = 1.0
+    return v
+
+
 def kalshi_market_to_generic(m: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a Kalshi market record into the generic market shape used by cross_arb.
 
@@ -173,56 +215,33 @@ def kalshi_market_to_generic(m: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(m, dict):
         return {}
     title = m.get('title') or m.get('ticker') or ''
-    # Try to find yes/no prices
+    yes_bid = _norm_prob(m.get('yes_bid') or m.get('yesBid'))
+    yes_ask = _norm_prob(m.get('yes_ask') or m.get('yesAsk'))
+    no_bid = _norm_prob(m.get('no_bid') or m.get('noBid'))
+    no_ask = _norm_prob(m.get('no_ask') or m.get('noAsk'))
+
     yes = None
     no = None
-    # Try common fields in Kalshi market records. Prices often in cents.
-    # Prefer `last_price`, then `yes_bid`/`yes_ask`, then `yes_price`/`no_price`.
     try:
         if 'last_price' in m and m.get('last_price') is not None:
-            # last_price often in cents (integer)
-            try:
-                lp = float(m.get('last_price'))
-                # if value > 1 assume cents
-                yes = lp / 100.0 if lp > 1.0 else lp
-            except Exception:
-                pass
+            lp = float(m.get('last_price'))
+            yes = _norm_prob(lp)
 
-        # yes_bid/yes_ask are typically in cents integer
         if yes is None and 'yes_bid' in m and m.get('yes_bid') is not None:
-            try:
-                yb = float(m.get('yes_bid'))
-                yes = yb / 100.0 if yb > 1.0 else yb
-            except Exception:
-                pass
+            yes = _norm_prob(m.get('yes_bid'))
         if no is None and 'no_bid' in m and m.get('no_bid') is not None:
-            try:
-                nb = float(m.get('no_bid'))
-                no = nb / 100.0 if nb > 1.0 else nb
-            except Exception:
-                pass
+            no = _norm_prob(m.get('no_bid'))
 
-        # yes_ask / no_ask fallback
         if yes is None and 'yes_ask' in m and m.get('yes_ask') is not None:
-            try:
-                ya = float(m.get('yes_ask'))
-                yes = ya / 100.0 if ya > 1.0 else ya
-            except Exception:
-                pass
+            yes = _norm_prob(m.get('yes_ask'))
         if no is None and 'no_ask' in m and m.get('no_ask') is not None:
-            try:
-                na = float(m.get('no_ask'))
-                no = na / 100.0 if na > 1.0 else na
-            except Exception:
-                pass
+            no = _norm_prob(m.get('no_ask'))
 
-        # dollar-string fields like last_price_dollars or yes_ask_dollars (e.g. '0.0300')
         if yes is None:
             for k in ('last_price_dollars', 'yes_ask_dollars', 'yes_bid_dollars'):
                 if k in m and m.get(k) is not None:
                     try:
-                        v = float(str(m.get(k)))
-                        yes = v
+                        yes = float(str(m.get(k)))
                         break
                     except Exception:
                         continue
@@ -230,13 +249,11 @@ def kalshi_market_to_generic(m: Dict[str, Any]) -> Dict[str, Any]:
             for k in ('no_ask_dollars', 'no_bid_dollars'):
                 if k in m and m.get(k) is not None:
                     try:
-                        v = float(str(m.get(k)))
-                        no = v
+                        no = float(str(m.get(k)))
                         break
                     except Exception:
                         continue
 
-        # If still missing, and a 'price' midpoint exists use it
         if (yes is None or no is None) and 'price' in m and m.get('price') is not None:
             try:
                 p = float(m.get('price'))
@@ -248,10 +265,10 @@ def kalshi_market_to_generic(m: Dict[str, Any]) -> Dict[str, Any]:
         pass
 
     outcomes = []
-    if yes is not None:
-        outcomes.append({'title': 'YES', 'price': yes})
-    if no is not None:
-        outcomes.append({'title': 'NO', 'price': no})
+    if yes is not None or yes_bid is not None or yes_ask is not None:
+        outcomes.append({'title': 'YES', 'price': yes, 'best_bid': yes_bid, 'best_ask': yes_ask})
+    if no is not None or no_bid is not None or no_ask is not None:
+        outcomes.append({'title': 'NO', 'price': no, 'best_bid': no_bid, 'best_ask': no_ask})
 
     return {
         'title': title,

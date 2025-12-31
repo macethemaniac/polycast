@@ -1,0 +1,42 @@
+{
+  "debug": {
+    "polymarket": {
+      "count": 5,
+      "attempts": [
+        {
+          "url": "https://gamma-api.polymarket.com/markets?closed=false&limit=5",
+          "status_code": 200,
+          "ok": true,
+          "latency_ms": 799
+        }
+      ],
+      "error": null
+    },
+    "kalshi": {
+      "count": 5,
+      "attempts": [
+        {
+          "url": "https://api.kalshi.com/v1/markets?limit=5",
+          "status_code": null,
+          "ok": false,
+          "error": "HTTPSConnectionPool(host='api.kalshi.com', port=443): Max retries exceeded with url: /v1/markets?limit=5 (Caused by NameResolutionError(\"HTTPSConnection(host='api.kalshi.com', port=443): Failed to resolve 'api.kalshi.com' ([Errno 11001] getaddrinfo failed)\"))",
+          "latency_ms": 11221
+        },
+        {
+          "url": "https://api.elections.kalshi.com/trade-api/v2/markets?limit=5&status=open",
+          "status_code": 200,
+          "ok": true,
+          "latency_ms": 1099
+        }
+      ],
+      "error": null
+    },
+    "pairs_compared": 0,
+    "threshold": 1.02,
+    "min_similarity": 0.4,
+    "candidates": [],
+    "errors": []
+  },
+  "opportunities_count": 0,
+  "pairs_compared": 0
+}
