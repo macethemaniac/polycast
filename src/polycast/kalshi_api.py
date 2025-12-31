@@ -5,8 +5,21 @@ public API may require authentication for some endpoints; this module
 tries a common endpoint and falls back cleanly to returning an empty list
 if unavailable.
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import requests
+import os
+
+
+def _get_kalshi_headers() -> Dict[str, str]:
+    """Get headers for Kalshi API requests, including auth if available."""
+    headers = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+    }
+    api_key = os.getenv('KALSHI_API_KEY')
+    if api_key:
+        headers['Authorization'] = f'Bearer {api_key}'
+    return headers
 
 
 def fetch_kalshi_markets(limit: int) -> List[Dict[str, Any]]:
@@ -15,16 +28,20 @@ def fetch_kalshi_markets(limit: int) -> List[Dict[str, Any]]:
 
     Note: Kalshi's API may require API keys for full access; this function
     uses common public endpoints and is resilient to errors.
+    Set KALSHI_API_KEY environment variable for authenticated access.
     """
+    headers = _get_kalshi_headers()
+
     # common guess for public listing endpoint
     urls = [
         f"https://api.kalshi.com/v1/markets?limit={limit}",
+        f"https://api.elections.kalshi.com/trade-api/v2/markets?limit={limit}&status=open",
         f"https://www.kalshi.com/api/markets?limit={limit}",
     ]
 
     for url in urls:
         try:
-            resp = requests.get(url, timeout=10)
+            resp = requests.get(url, headers=headers, timeout=10)
             resp.raise_for_status()
             data = resp.json()
 
@@ -57,9 +74,10 @@ def fetch_kalshi_series(series_id: str) -> Dict[str, Any]:
 
     Returns the parsed JSON (empty dict on error).
     """
+    headers = _get_kalshi_headers()
     url = f"https://api.elections.kalshi.com/trade-api/v2/series/{series_id}"
     try:
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, headers=headers, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         # Prefer 'series' payload if present
@@ -114,9 +132,10 @@ def fetch_kalshi_series_markets(series_ticker: str, status: str = 'open') -> Lis
 
     Returns list of market dicts (may be empty).
     """
+    headers = _get_kalshi_headers()
     url = f"https://api.elections.kalshi.com/trade-api/v2/markets?series_ticker={series_ticker}&status={status}"
     try:
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, headers=headers, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         if isinstance(data, dict) and 'markets' in data and isinstance(data['markets'], list):
@@ -133,9 +152,10 @@ def fetch_kalshi_event(event_ticker: str) -> Dict[str, Any]:
 
     Endpoint example: https://api.elections.kalshi.com/trade-api/v2/events/{event_ticker}
     """
+    headers = _get_kalshi_headers()
     url = f"https://api.elections.kalshi.com/trade-api/v2/events/{event_ticker}"
     try:
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, headers=headers, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         if isinstance(data, dict) and 'event' in data:

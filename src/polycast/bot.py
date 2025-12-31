@@ -254,10 +254,6 @@ async def crossarb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except Exception as e:
         await processing_msg.edit_text(f"❌ <b>Error:</b> {str(e)}", parse_mode='HTML')
         logger.error(f"Error in crossarb_command: {str(e)}", exc_info=True)
-    except Exception as e:
-        error_message = f"❌ <b>Error:</b> {str(e)}"
-        await processing_msg.edit_text(error_message, parse_mode='HTML')
-        logger.error(f"Error in price_command: {str(e)}", exc_info=True)
 
 
 async def alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -345,21 +341,6 @@ def main() -> None:
         try:
             jq = application.job_queue
 
-            async def _cross_arb_job(context: ContextTypes.DEFAULT_TYPE):
-                try:
-                    results = find_cross_market_arbitrage(limit_pol=100, limit_kal=100, min_similarity=0.3)
-                    if not results:
-                        return
-                    out_lines = ["🔔 <b>Automated Cross-market Arbitrage Alert</b>\n"]
-                    for r in results[:5]:
-                        out_lines.append(
-                            f"Type: {r['type']}\nPolymarket: {r['pol_question']}\nKalshi: {r['kal_question']}\n"
-                            f"Total: {r['total']:.2f} Profit: {r['profit_pct']:.2f}%\n"
-                        )
-                    await context.bot.send_message(chat_id=alert_chat, text="\n".join(out_lines), parse_mode='HTML')
-                except Exception:
-                    return
-
             # File-backed seen-opportunities to avoid duplicate alerts
             data_dir = Path(__file__).resolve().parents[1] / 'data'
             data_dir.mkdir(parents=True, exist_ok=True)
@@ -381,6 +362,38 @@ def main() -> None:
                         json.dump(d, f)
                 except Exception:
                     pass
+
+            async def _reminder_job(context: ContextTypes.DEFAULT_TYPE):
+                """Job to send a one-time reminder for previously sent alerts."""
+                try:
+                    data = context.job.data or {}
+                    recipients = data.get('recipients', [])
+                    keys = data.get('keys', [])
+                    text = data.get('text', '')
+
+                    # load and update seen metadata
+                    seen = _load_seen()
+                    now_ts = int(time.time())
+
+                    for k in keys:
+                        meta = seen.get(k, {})
+                        # send reminder only if not already sent
+                        if meta.get('reminder_sent'):
+                            continue
+                        for cid in recipients:
+                            try:
+                                await context.bot.send_message(chat_id=cid, text=text, parse_mode='HTML')
+                            except Exception:
+                                continue
+                        # mark reminder as sent and increment count to 2
+                        meta['reminder_sent'] = True
+                        meta['last_seen'] = now_ts
+                        meta['count'] = int(meta.get('count', 1)) + 1
+                        seen[k] = meta
+
+                    _save_seen(seen)
+                except Exception:
+                    return
 
             async def _cross_arb_job(context: ContextTypes.DEFAULT_TYPE):
                 try:
@@ -479,38 +492,6 @@ def main() -> None:
             jq.run_repeating(_cross_arb_job, interval=180, first=10)
         except Exception:
             logger.exception('Failed to schedule cross-arb job')
-
-            async def _reminder_job(context: ContextTypes.DEFAULT_TYPE):
-                """Job to send a one-time reminder for previously sent alerts."""
-                try:
-                    data = context.job.data or {}
-                    recipients = data.get('recipients', [])
-                    keys = data.get('keys', [])
-                    text = data.get('text', '')
-
-                    # load and update seen metadata
-                    seen = _load_seen()
-                    now_ts = int(time.time())
-
-                    for k in keys:
-                        meta = seen.get(k, {})
-                        # send reminder only if not already sent
-                        if meta.get('reminder_sent'):
-                            continue
-                        for cid in recipients:
-                            try:
-                                await context.bot.send_message(chat_id=cid, text=text, parse_mode='HTML')
-                            except Exception:
-                                continue
-                        # mark reminder as sent and increment count to 2
-                        meta['reminder_sent'] = True
-                        meta['last_seen'] = now_ts
-                        meta['count'] = int(meta.get('count', 1)) + 1
-                        seen[k] = meta
-
-                    _save_seen(seen)
-                except Exception:
-                    return
     
     
     # Start the bot

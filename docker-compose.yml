@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: polycast-bot
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      # Persist data directory
+      - ./src/data:/app/src/data
+    networks:
+      - polycast-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  polycast-network:
+    driver: bridge

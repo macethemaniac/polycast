@@ -124,6 +124,8 @@ def find_cross_market_arbitrage(limit_pol: int = 50, limit_kal: int = 50, thresh
             return 0.0
         inter = ta.intersection(tb)
         union = ta.union(tb)
+        if len(union) == 0:
+            return 0.0
         return len(inter) / len(union)
 
 
@@ -241,7 +243,10 @@ def find_cross_market_arbitrage(limit_pol: int = 50, limit_kal: int = 50, thresh
                         'type': 'pol_yes + kal_no',
                         'total': total_a,
                         'profit_pct': (total_a - 1.0) * 100.0,
-                        'title_similarity': sim,
+                        'title_similarity': combined,
+                        'seq_similarity': seq_sim,
+                        'jaccard_similarity': jacc,
+                        'date_score': dscore,
                     })
 
                 # Option B: buy NO on Polymarket, sell YES on Kalshi
@@ -257,7 +262,10 @@ def find_cross_market_arbitrage(limit_pol: int = 50, limit_kal: int = 50, thresh
                         'type': 'pol_no + kal_yes',
                         'total': total_b,
                         'profit_pct': (total_b - 1.0) * 100.0,
-                        'title_similarity': sim,
+                        'title_similarity': combined,
+                        'seq_similarity': seq_sim,
+                        'jaccard_similarity': jacc,
+                        'date_score': dscore,
                     })
 
             except Exception:
