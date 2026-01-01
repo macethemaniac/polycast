@@ -11,9 +11,10 @@ entrypoint = "src/polycast/bot.py"
 
 # Hidden files in the IDE
 hidden = [".pythonlibs", ".cache", ".config", "__pycache__", "venv"]
+modules = ["python-3.8", "nix"]
 
 [nix]
-channel = "stable-23_11"
+channel = "stable-25_05"
 
 [deployment]
 run = ["python", "src/polycast/bot.py"]
