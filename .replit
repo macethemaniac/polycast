@@ -11,10 +11,11 @@ entrypoint = "src/polycast/bot.py"
 
 # Hidden files in the IDE
 hidden = [".pythonlibs", ".cache", ".config", "__pycache__", "venv"]
-modules = ["python-3.8", "nix"]
+modules = ["nix", "python-3.11"]
 
 [nix]
 channel = "stable-25_05"
+packages = ["glibcLocales", "libxcrypt", "rapidfuzz-cpp", "taskflow"]
 
 [deployment]
 run = ["python", "src/polycast/bot.py"]
@@ -26,3 +27,26 @@ PYTHONUNBUFFERED = "1"
 
 [agent]
 expertMode = true
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Run Bot"
+
+[[workflows.workflow]]
+name = "Run Bot"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python src/polycast/main.py"
+
+[workflows.workflow.metadata]
+outputType = "console"
