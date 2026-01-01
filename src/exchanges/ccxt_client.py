@@ -8,7 +8,14 @@ centralized exchanges via CCXT.
 from typing import Dict, Iterable, List
 import ccxt
 
-DEFAULT_EXCHANGES: List[str] = ["binance", "kraken"]
+# Expand default CEX coverage beyond two venues for better arbitrage visibility.
+DEFAULT_EXCHANGES: List[str] = [
+    "binance",
+    "kraken",
+    "okx",
+    "bybit",
+    "kucoin",
+]
 
 
 def _normalize_pair(pair: str) -> str:

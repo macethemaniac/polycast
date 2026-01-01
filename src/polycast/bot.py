@@ -81,22 +81,17 @@ def should_alert(seen: Dict[str, Dict[str, float]], fp: str, edge: float, cooldo
 
 
 def format_arbitrage_message(pair: str, prices: Dict[str, float], arbitrage_result: Dict) -> str:
-    """Build a human-readable arbitrage message (ASCII-safe)."""
+    """Build a human-readable arbitrage message (ASCII-safe) showing only best spread."""
     lines = [
         "<b>Arbitrage Scanner</b>",
         f"Pair: <code>{pair}</code>",
         "",
-        "<b>Current Prices:</b>",
+        "<b>Best Spread:</b>",
+        f"- Buy on: <b>{arbitrage_result['buy_exchange'].upper()}</b> @ <code>${arbitrage_result['buy_price']:,.2f}</code>",
+        f"- Sell on: <b>{arbitrage_result['sell_exchange'].upper()}</b> @ <code>${arbitrage_result['sell_price']:,.2f}</code>",
+        f"- Spread: <code>${arbitrage_result['spread']:,.2f}</code> (<code>{arbitrage_result['spread_percent']:.4f}%</code>)",
+        "",
     ]
-    for exchange, price in prices.items():
-        lines.append(f"- {exchange}: <code>${price:,.2f}</code>")
-
-    lines.append("")
-    lines.append("<b>Arbitrage Analysis:</b>")
-    lines.append(f"- Buy on: <b>{arbitrage_result['buy_exchange'].upper()}</b> @ <code>${arbitrage_result['buy_price']:,.2f}</code>")
-    lines.append(f"- Sell on: <b>{arbitrage_result['sell_exchange'].upper()}</b> @ <code>${arbitrage_result['sell_price']:,.2f}</code>")
-    lines.append(f"- Spread: <code>${arbitrage_result['spread']:,.2f}</code> (<code>{arbitrage_result['spread_percent']:.4f}%</code>)")
-    lines.append("")
     if arbitrage_result["spread_percent"] > 0:
         lines.append("<b>Arbitrage opportunity detected!</b>")
     else:
