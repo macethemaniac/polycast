@@ -23,3 +23,6 @@ deploymentTarget = "cloudrun"
 [env]
 PYTHONPATH = "/home/runner/${REPL_SLUG}/src"
 PYTHONUNBUFFERED = "1"
+
+[agent]
+expertMode = true
