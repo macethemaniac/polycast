@@ -2,16 +2,16 @@
 Telegram bot integration for the arbitrage scanner.
 
 Provides Telegram commands to scan spot exchanges via CCXT and check
-Polymarket/Kalshi arbitrage.
+Polymarket/Kalshi arbitrage, with optional scheduled watch and deduped alerts.
 """
 
+import argparse
 import json
 import logging
 import os
 import time
-import argparse
 from pathlib import Path
-from typing import Dict, Tuple, Any, List
+from typing import Any, Dict, Tuple, List
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -25,6 +25,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 SEEN_OPPS_FILE = DATA_DIR / "seen_opps.json"
@@ -63,8 +64,7 @@ def build_fingerprint(buy_src: str, sell_src: str, market_id: str, buy_price: fl
 def should_alert(seen: Dict[str, Dict[str, float]], fp: str, edge: float, cooldown_sec: int, improve_threshold: float, now_ts: float) -> Tuple[bool, str, float]:
     """
     Decide whether to alert.
-    Returns (ok, tag, prev_edge)
-    tag is "NEW" or "IMPROVED"
+    Returns (ok, tag, prev_edge) with tag in {"NEW","IMPROVED"}.
     """
     prev = seen.get(fp)
     if not prev:
@@ -100,28 +100,26 @@ def format_arbitrage_message(pair: str, prices: Dict[str, float], arbitrage_resu
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the /start command."""
     welcome_message = (
         "<b>Welcome to Arbitrage Scanner Bot!</b>\n\n"
         "I can help you discover arbitrage opportunities and fetch market prices.\n\n"
         "<b>Quick Commands</b>\n"
         "- /scan [pair] - Scan a pair (default BTC/USDT) via CCXT\n"
-        "- /price <pair> - Get prices for any pair via CCXT\n"
+        "- /price &lt;pair&gt; - Get prices for any pair via CCXT\n"
         "- /polyarb - Check Polymarket for YES/NO arbitrage\n"
-        "- /crossarb [min_similarity] - Cross-market scan (Polymarket <-> Kalshi)\n"
+        "- /crossarb [min_similarity] - Cross-market scan (Polymarket &lt;-&gt; Kalshi)\n"
         "- /help - Full help and examples"
     )
     await update.message.reply_text(welcome_message, parse_mode="HTML")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the /help command."""
     help_message = (
         "<b>Help - Arbitrage Scanner Bot</b>\n\n"
         "Use these commands to query prices and find arbitrage:\n\n"
         "- <code>/start</code> - Show the welcome message\n"
         "- <code>/scan [pair]</code> - Scan a pair (default BTC/USDT) via CCXT\n"
-        "- <code>/price <pair></code> - Get prices for any <code>BASE/QUOTE</code>\n"
+        "- <code>/price &lt;pair&gt;</code> - Get prices for any <code>BASE/QUOTE</code>\n"
         "- <code>/polyarb</code> - Detect internal Polymarket binary arbitrage\n"
         "- <code>/crossarb [min_similarity]</code> - Cross-market scan between Polymarket and Kalshi. Optional similarity (0-1).\n\n"
         "Examples:\n"
@@ -134,7 +132,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the /scan command - scans a pair and cross-market opportunities."""
     pair = "BTC/USDT"
     min_similarity = 0.4
     for arg in context.args:
@@ -157,19 +154,11 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             spot_message = f"<b>Spot scan error:</b> {error}"
             logger.error("Error in scan_command: %s", error)
         else:
-            spot_message = format_arbitrage_message(
-                pair,
-                arbitrage_result["prices"],
-                arbitrage_result,
-            )
+            spot_message = format_arbitrage_message(pair, arbitrage_result["prices"], arbitrage_result)
 
-        cross_lines = ["<b>Cross-market Arbitrage (Polymarket <-> Kalshi)</b>\n"]
+        cross_lines = ["<b>Cross-market Arbitrage (Polymarket &lt;-&gt; Kalshi)</b>\n"]
         try:
-            cross_results = find_cross_market_arbitrage(
-                limit_pol=100,
-                limit_kal=100,
-                min_similarity=min_similarity,
-            )
+            cross_results = find_cross_market_arbitrage(limit_pol=100, limit_kal=100, min_similarity=min_similarity)
             if not cross_results:
                 cross_lines.append("No cross-market arbitrage found right now.")
             else:
@@ -194,7 +183,6 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the /price command - gets prices for a specified pair."""
     if not context.args:
         await update.message.reply_text(
             "Please specify a trading pair.\n\n"
@@ -204,7 +192,6 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     pair = context.args[0].upper()
-
     if "/" not in pair:
         await update.message.reply_text(
             "Invalid pair format. Please use format: <code>BASE/QUOTE</code>\n\n"
@@ -220,21 +207,14 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     try:
         arbitrage_result, error = scan_arbitrage(pair)
-
         if error:
             error_message = f"<b>Error:</b> {error}"
             await processing_msg.edit_text(error_message, parse_mode="HTML")
             logger.error("Error in price_command: %s", error)
             return
 
-        message = format_arbitrage_message(
-            pair,
-            arbitrage_result["prices"],
-            arbitrage_result,
-        )
-
+        message = format_arbitrage_message(pair, arbitrage_result["prices"], arbitrage_result)
         await processing_msg.edit_text(message, parse_mode="HTML")
-
     except Exception as exc:
         error_message = f"<b>Error:</b> {exc}"
         await processing_msg.edit_text(error_message, parse_mode="HTML")
@@ -242,22 +222,15 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def polyarb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the /polyarb command - find Polymarket binary arbitrage."""
     processing_msg = await update.message.reply_text(
         "Checking Polymarket for arbitrage...",
         parse_mode="HTML",
     )
-
     try:
         results = find_polymarket_arbitrage()
-
         if not results:
-            await processing_msg.edit_text(
-                "No Polymarket arbitrage found right now.",
-                parse_mode="HTML",
-            )
+            await processing_msg.edit_text("No Polymarket arbitrage found right now.", parse_mode="HTML")
             return
-
         out_lines = ["<b>Polymarket Arbitrage</b>\n"]
         for r in results[:5]:
             q = r.get("question", "")
@@ -268,22 +241,18 @@ async def polyarb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             out_lines.append(
                 f"Question: {q}\nYES: {yes:.2f} NO: {no:.2f} Total: {total:.2f} Profit: {profit:.2f}%\n"
             )
-
         message = "\n".join(out_lines)
         await processing_msg.edit_text(message, parse_mode="HTML")
-
     except Exception as exc:
         await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")
         logger.error("Error in polyarb_command: %s", exc, exc_info=True)
 
 
 async def crossarb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the /crossarb command - find cross-market arbitrage Polymarket vs Kalshi."""
     processing_msg = await update.message.reply_text(
-        "Checking cross-market arbitrage (Polymarket <-> Kalshi)...",
+        "Checking cross-market arbitrage (Polymarket &lt;-&gt; Kalshi)...",
         parse_mode="HTML",
     )
-
     try:
         min_sim = 0.4
         if context.args:
@@ -291,21 +260,11 @@ async def crossarb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 min_sim = float(context.args[0])
             except Exception:
                 pass
-
-        results = find_cross_market_arbitrage(
-            limit_pol=100,
-            limit_kal=100,
-            min_similarity=min_sim,
-        )
-
+        results = find_cross_market_arbitrage(limit_pol=100, limit_kal=100, min_similarity=min_sim)
         if not results:
-            await processing_msg.edit_text(
-                "No cross-market arbitrage found right now.",
-                parse_mode="HTML",
-            )
+            await processing_msg.edit_text("No cross-market arbitrage found right now.", parse_mode="HTML")
             return
-
-        out_lines = ["<b>Cross-market Arbitrage (Polymarket <-> Kalshi)</b>\n"]
+        out_lines = ["<b>Cross-market Arbitrage (Polymarket &lt;-&gt; Kalshi)</b>\n"]
         for r in results[:5]:
             out_lines.append(
                 f"Type: {r['type']}\n"
@@ -315,26 +274,20 @@ async def crossarb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 f"Kal YES: {r['kal_yes']:.2f} Kal NO: {r['kal_no']:.2f}\n"
                 f"Total: {r['total']:.2f} Profit: {r['profit_pct']:.2f}%\n\n"
             )
-
-        message = "\n".join(out_lines)
-        await processing_msg.edit_text(message, parse_mode="HTML")
-
+        await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
     except Exception as exc:
         await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")
         logger.error("Error in crossarb_command: %s", exc, exc_info=True)
 
 
 async def alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """In-chat command to enable/disable scheduled cross-arb alerts."""
+    """Enable/disable scheduled alerts for this chat."""
     chat_id = str(update.effective_chat.id)
-    data_dir = DATA_DIR
     enabled_file = DATA_DIR / "alerts_chats.json"
-
-    enabled_chats = {}
+    enabled_chats: Dict[str, bool] = {}
     try:
         if enabled_file.exists():
-            with enabled_file.open("r", encoding="utf-8") as f:
-                enabled_chats = json.load(f)
+            enabled_chats = json.loads(enabled_file.read_text(encoding="utf-8"))
     except Exception:
         enabled_chats = {}
 
@@ -347,42 +300,31 @@ async def alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     cmd = context.args[0].lower()
     if cmd in ("enable", "on"):
         enabled_chats[chat_id] = True
-        try:
-            with enabled_file.open("w", encoding="utf-8") as f:
-                json.dump(enabled_chats, f)
-        except Exception:
-            pass
+        enabled_file.write_text(json.dumps(enabled_chats), encoding="utf-8")
         await update.message.reply_text("Alerts enabled for this chat.")
         return
-
     if cmd in ("disable", "off"):
         enabled_chats[chat_id] = False
-        try:
-            with enabled_file.open("w", encoding="utf-8") as f:
-                json.dump(enabled_chats, f)
-        except Exception:
-            pass
+        enabled_file.write_text(json.dumps(enabled_chats), encoding="utf-8")
         await update.message.reply_text("Alerts disabled for this chat.")
         return
-
     if cmd == "status":
         enabled = bool(enabled_chats.get(chat_id, False))
         msg = "Alerts are ENABLED for this chat." if enabled else "Alerts are DISABLED for this chat."
         await update.message.reply_text(msg)
         return
-
     await update.message.reply_text("Usage: /alerts enable|disable|status")
 
 
 async def watch_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Enable scheduled cross-arb watch for this chat."""
     chat_id = str(update.effective_chat.id)
-    interval = 300
+    interval = context.bot_data.get("watch_interval", 300)
     if context.args:
         try:
             interval = int(context.args[0])
         except Exception:
-            interval = 300
+            interval = context.bot_data.get("watch_interval", 300)
 
     cooldown_sec = int(context.bot_data.get("alert_cooldown_sec", 30 * 60))
     improve_pct = float(context.bot_data.get("alert_improve_pct", 0.5))
@@ -467,7 +409,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 def main() -> None:
-    """Start the Telegram bot."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--alert-cooldown", type=int, default=int(os.getenv("ALERT_COOLDOWN", "30")), help="Cooldown in minutes for repeating alerts")
     parser.add_argument("--alert-improve", type=float, default=float(os.getenv("ALERT_IMPROVE", "0.005")), help="Required improvement in edge to resend within cooldown (fraction, e.g., 0.005 = 0.5%)")
@@ -478,12 +419,9 @@ def main() -> None:
     watch_interval = args.watch_interval
 
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-
     if not bot_token:
         logger.error("TELEGRAM_BOT_TOKEN environment variable not set!")
         print("ERROR: TELEGRAM_BOT_TOKEN environment variable is required.")
-        print("Set it using: export TELEGRAM_BOT_TOKEN='your_token_here'")
-        print("Or create a .env file with: TELEGRAM_BOT_TOKEN=your_token_here")
         return
 
     application = Application.builder().token(bot_token).build()
@@ -501,138 +439,80 @@ def main() -> None:
     application.add_handler(CommandHandler("watch_on", watch_on_command))
     application.add_handler(CommandHandler("watch_off", watch_off_command))
     application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(CommandHandler("watch_on", watch_on_command))
-    application.add_handler(CommandHandler("watch_off", watch_off_command))
-    application.add_handler(CommandHandler("status", status_command))
 
     alert_chat = os.getenv("TELEGRAM_ALERT_CHAT_ID")
     if alert_chat:
-        try:
-            jq = application.job_queue
+        jq = application.job_queue
+        cooldown_sec = alert_cooldown_min * 60
+        improve_pct = alert_improve * 100.0
 
-            dedupe_ttl = int(os.getenv("TELEGRAM_ALERT_DEDUPE_TTL", "3600"))
-            cooldown_sec = alert_cooldown_min * 60
-            improve_pct = alert_improve * 100.0
-
-            async def _reminder_job(context: ContextTypes.DEFAULT_TYPE):
-                try:
-                    data = context.job.data or {}
-                    recipients = data.get("recipients", [])
-                    keys = data.get("keys", [])
-                    text = data.get("text", "")
-
-                    seen = _load_seen()
-                    now_ts = int(time.time())
-
-                    for key in keys:
-                        meta = seen.get(key, {})
-                        if meta.get("reminder_sent"):
-                            continue
-                        for cid in recipients:
-                            try:
-                                await context.bot.send_message(chat_id=cid, text=text, parse_mode="HTML")
-                            except Exception:
-                                continue
-                        meta["reminder_sent"] = True
-                        meta["last_seen"] = now_ts
-                        meta["count"] = int(meta.get("count", 1)) + 1
-                        seen[key] = meta
-
-                    _save_seen(seen)
-                except Exception:
+        async def _cross_arb_job(context: ContextTypes.DEFAULT_TYPE):
+            try:
+                results = find_cross_market_arbitrage(limit_pol=100, limit_kal=100, min_similarity=0.3)
+                if not results:
                     return
-
-            async def _cross_arb_job(context: ContextTypes.DEFAULT_TYPE):
+                seen = load_seen()
+                new_out = []
+                now_ts = int(time.time())
+                for r in results[:20]:
+                    buy_src = "polymarket" if "pol" in r.get("type", "") else "kalshi"
+                    sell_src = "kalshi" if buy_src == "polymarket" else "polymarket"
+                    market_id = r.get("pol_question", "") or r.get("kal_question", "")
+                    buy_price = r.get("pol_yes") if "yes" in r.get("type", "") else r.get("pol_no")
+                    sell_price = r.get("kal_no") if "kal_no" in r.get("type", "") else r.get("kal_yes")
+                    fp = build_fingerprint(buy_src, sell_src, market_id, buy_price or 0.0, sell_price or 0.0)
+                    edge = float(r.get("profit_pct", 0.0))
+                    ok, tag, prev_edge = should_alert(seen, fp, edge, cooldown_sec, improve_pct, now_ts)
+                    if not ok:
+                        continue
+                    seen[fp] = {"ts": now_ts, "edge": edge}
+                    r["alert_tag"] = tag
+                    r["prev_edge"] = prev_edge
+                    new_out.append(r)
+                if not new_out:
+                    save_seen(seen)
+                    return
+                out_lines = ["<b>Automated Cross-market Arbitrage Alert</b>\n"]
+                for r in new_out[:5]:
+                    tag = r.get("alert_tag", "NEW")
+                    prev_edge = r.get("prev_edge", 0.0)
+                    line = (
+                        f"[{tag}] Type: {r['type']}\n"
+                        f"Polymarket: {r['pol_question']}\n"
+                        f"Kalshi: {r['kal_question']}\n"
+                        f"Total: {r['total']:.2f} Profit: {r['profit_pct']:.2f}%"
+                    )
+                    if tag == "IMPROVED":
+                        line += f" (prev {prev_edge:.2f}%)"
+                    line += "\n"
+                    out_lines.append(line)
+                # send alerts
                 try:
-                    results = find_cross_market_arbitrage(limit_pol=100, limit_kal=100, min_similarity=0.3)
-                    if not results:
-                        return
-
-                    seen = load_seen()
-                    new_out = []
-                    now_ts = int(time.time())
-
-                    for r in results[:20]:
-                        buy_src = "polymarket" if "pol" in r.get("type", "") else "kalshi"
-                        sell_src = "kalshi" if buy_src == "polymarket" else "polymarket"
-                        market_id = r.get("pol_question", "") or r.get("kal_question", "")
-                        buy_price = r.get("pol_yes") if "yes" in r.get("type", "") else r.get("pol_no")
-                        sell_price = r.get("kal_no") if "kal_no" in r.get("type", "") else r.get("kal_yes")
-                        fp = build_fingerprint(buy_src, sell_src, market_id, buy_price or 0.0, sell_price or 0.0)
-                        edge = float(r.get("profit_pct", 0.0))
-                        ok, tag, prev_edge = should_alert(seen, fp, edge, cooldown_sec, improve_pct, now_ts)
-                        if not ok:
-                            continue
-                        seen[fp] = {"ts": now_ts, "edge": edge}
-                        r["alert_tag"] = tag
-                        r["prev_edge"] = prev_edge
-                        new_out.append(r)
-
-                        if not new_out:
-                            save_seen(seen)
-                            return
-
-                    out_lines = ["<b>Automated Cross-market Arbitrage Alert</b>\n"]
-                    for r in new_out[:5]:
-                        tag = r.get("alert_tag", "NEW")
-                        prev_edge = r.get("prev_edge", 0.0)
-                        line = (
-                            f"[{tag}] Type: {r['type']}\n"
-                            f"Polymarket: {r['pol_question']}\n"
-                            f"Kalshi: {r['kal_question']}\n"
-                            f"Total: {r['total']:.2f} Profit: {r['profit_pct']:.2f}%"
-                        )
-                        if tag == "IMPROVED":
-                            line += f" (prev {prev_edge:.2f}%)"
-                        line += "\n"
-                        out_lines.append(line)
-
-                    enabled_file = data_dir / "alerts_chats.json"
+                    recipients = {str(alert_chat)}
+                    enabled_file = DATA_DIR / "alerts_chats.json"
                     enabled_chats = {}
                     try:
                         if enabled_file.exists():
-                            with enabled_file.open("r", encoding="utf-8") as f:
-                                enabled_chats = json.load(f)
+                            enabled_chats = json.loads(enabled_file.read_text(encoding="utf-8"))
                     except Exception:
                         enabled_chats = {}
-
-                    recipients = set()
-                    recipients.add(str(alert_chat))
                     for cid, val in enabled_chats.items():
                         try:
                             if val:
                                 recipients.add(str(cid))
                         except Exception:
                             continue
-
                     for cid in recipients:
                         try:
                             await context.bot.send_message(chat_id=cid, text="\n".join(out_lines), parse_mode="HTML")
                         except Exception:
                             continue
-
-                    try:
-                        reminder_text = "\n".join(["<b>Reminder:</b>\n"] + out_lines[1:])
-                        scheduled_keys = []
-                        for r in new_out:
-                            k = r.get("alert_tag", "") + "|" + r.get("pol_question", "") + "|" + r.get("kal_question", "")
-                            scheduled_keys.append(k)
-                            meta = seen.get(k, {})
-                            meta.setdefault("reminder_sent", False)
-                            seen[k] = meta
-
-                        job_data = {"recipients": list(recipients), "keys": scheduled_keys, "text": reminder_text}
-                        jq.run_once(_reminder_job, when=60, data=job_data)
-                    except Exception:
-                        pass
-
+                finally:
                     save_seen(seen)
-                except Exception:
-                    return
+            except Exception:
+                return
 
-            jq.run_repeating(_cross_arb_job, interval=180, first=10)
-        except Exception:
-            logger.exception("Failed to schedule cross-arb job")
+        jq.run_repeating(_cross_arb_job, interval=180, first=10)
 
     logger.info("Bot starting...")
     print("Bot is running. Press Ctrl+C to stop.")
