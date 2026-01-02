@@ -16,9 +16,9 @@ from typing import Any, Dict, Tuple, List
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-from scanner import scan_arbitrage
-from polymarket_api import find_polymarket_arbitrage
-from cross_arb import find_cross_market_arbitrage
+from polycast.scanner import scan_arbitrage
+from polycast.polymarket_api import find_polymarket_arbitrage
+from polycast.cross_arb import find_cross_market_arbitrage
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -318,6 +318,9 @@ async def alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def watch_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Enable scheduled cross-arb watch for this chat."""
+    if context.job_queue is None:
+        await update.message.reply_text("Scheduling is unavailable (job queue not configured).")
+        return
     chat_id = str(update.effective_chat.id)
     interval = context.bot_data.get("watch_interval", 300)
     if context.args:
@@ -441,7 +444,7 @@ def main() -> None:
     application.add_handler(CommandHandler("status", status_command))
 
     alert_chat = os.getenv("TELEGRAM_ALERT_CHAT_ID")
-    if alert_chat:
+    if alert_chat and application.job_queue is not None:
         jq = application.job_queue
         cooldown_sec = alert_cooldown_min * 60
         improve_pct = alert_improve * 100.0
@@ -513,6 +516,8 @@ def main() -> None:
                 return
 
         jq.run_repeating(_cross_arb_job, interval=180, first=10)
+    elif alert_chat and application.job_queue is None:
+        logger.warning("TELEGRAM_ALERT_CHAT_ID set but JobQueue unavailable; alerts/watch scheduling disabled. Install python-telegram-bot[job-queue] or enable job queue.")
 
     logger.info("Bot starting...")
     print("Bot is running. Press Ctrl+C to stop.")

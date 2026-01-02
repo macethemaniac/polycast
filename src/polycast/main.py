@@ -6,7 +6,7 @@ check, and prints the results to the console.
 """
 
 from exchanges.ccxt_client import get_ccxt_prices, DEFAULT_EXCHANGES
-from analytics.arbitrage import check_arbitrage
+from polycast.analytics.arbitrage import check_arbitrage
 
 
 def main():

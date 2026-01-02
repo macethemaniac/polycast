@@ -18,8 +18,8 @@ from polycast.adapters import polymarket as pm_adapter
 from polycast.adapters import kalshi as kal_adapter
 from polycast.matching.engine import match_markets
 from polycast.arbitrage.engine import compute_opportunities, ArbConfig, save_opportunities, format_console_table
-from polymarket_api import fetch_polymarket_markets
-from kalshi_api import (
+from polycast.polymarket_api import fetch_polymarket_markets
+from polycast.kalshi_api import (
     fetch_kalshi_markets,
     fetch_kalshi_series,
     fetch_kalshi_series_markets,

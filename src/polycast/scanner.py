@@ -7,7 +7,7 @@ that can be used by both console and Telegram bot interfaces.
 
 from typing import Dict, Optional, Tuple
 from exchanges.ccxt_client import get_ccxt_prices, DEFAULT_EXCHANGES
-from analytics.arbitrage import check_arbitrage
+from polycast.analytics.arbitrage import check_arbitrage
 
 
 def scan_arbitrage(
@@ -46,4 +46,3 @@ def scan_arbitrage(
         
     except Exception as e:
         return None, str(e)
-
