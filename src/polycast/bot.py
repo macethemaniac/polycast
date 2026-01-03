@@ -13,11 +13,31 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Tuple, List
 
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 
-from polycast.scanner import scan_arbitrage
-from polycast.polymarket_api import find_polymarket_arbitrage
+from polycast.scanner import (
+    scan_arbitrage,
+    scan_polymarket_raw,
+    scan_polymarket_ml,
+    scan_polymarket_trending,
+    scan_polymarket_clusters,
+    scan_cross_market_mismatches,
+)
+from engines.watchlist import (
+    add_to_watchlist,
+    remove_from_watchlist,
+    list_watchlist,
+    scan_watchlist,
+)
+from logging.opportunity_logger import log_opportunities
+from ml.label_store import save_label, load_labels
+from engines.watchlist import (
+    add_to_watchlist,
+    remove_from_watchlist,
+    list_watchlist,
+    scan_watchlist,
+)
 from polycast.cross_arb import find_cross_market_arbitrage
 
 logging.basicConfig(
@@ -29,6 +49,9 @@ logger = logging.getLogger(__name__)
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 SEEN_OPPS_FILE = DATA_DIR / "seen_opps.json"
+XARB_ALERTS_FILE = DATA_DIR / "xarb_alerts.json"
+XARB_SEEN_FILE = DATA_DIR / "xarb_seen.json"
+LABELS_CACHE_FILE = DATA_DIR / "labels_cache.json"
 
 
 def load_seen(prune_older_sec: int = 7 * 24 * 3600) -> Dict[str, Dict[str, float]]:
@@ -53,12 +76,56 @@ def save_seen(d: Dict[str, Dict[str, float]]) -> None:
         pass
 
 
+def load_xarb_seen(prune_older_sec: int = 6 * 3600) -> Dict[str, Dict[str, float]]:
+    """Load seen cross-arb alerts."""
+    try:
+        if not XARB_SEEN_FILE.exists():
+            return {}
+        data = json.loads(XARB_SEEN_FILE.read_text(encoding="utf-8"))
+        now_ts = time.time()
+        pruned = {k: v for k, v in data.items() if now_ts - float(v.get("ts", 0)) <= prune_older_sec}
+        if len(pruned) != len(data):
+            save_xarb_seen(pruned)
+        return pruned
+    except Exception:
+        return {}
+
+
+def save_xarb_seen(d: Dict[str, Dict[str, float]]) -> None:
+    try:
+        XARB_SEEN_FILE.write_text(json.dumps(d, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def load_xarb_alert_flag() -> bool:
+    try:
+        if not XARB_ALERTS_FILE.exists():
+            return False
+        data = json.loads(XARB_ALERTS_FILE.read_text(encoding="utf-8"))
+        return bool(data.get("enabled"))
+    except Exception:
+        return False
+
+
+def save_xarb_alert_flag(enabled: bool) -> None:
+    try:
+        XARB_ALERTS_FILE.write_text(json.dumps({"enabled": enabled}, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def build_fingerprint(buy_src: str, sell_src: str, market_id: str, buy_price: float, sell_price: float) -> str:
     """Stable fingerprint for an opportunity."""
     rounded_buy = round(float(buy_price), 4)
     rounded_sell = round(float(sell_price), 4)
     payload = f"{buy_src}|{sell_src}|{market_id}|{rounded_buy}|{rounded_sell}"
     return str(hash(payload))
+
+
+def _is_admin(chat_id: str) -> bool:
+    admin_id = os.getenv("TELEGRAM_ADMIN_CHAT_ID") or os.getenv("TELEGRAM_ALERT_CHAT_ID")
+    return admin_id and str(chat_id) == str(admin_id)
 
 
 def should_alert(seen: Dict[str, Dict[str, float]], fp: str, edge: float, cooldown_sec: int, improve_threshold: float, now_ts: float) -> Tuple[bool, str, float]:
@@ -107,6 +174,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "- /scan [pair] - Scan a pair (default BTC/USDT) via CCXT\n"
         "- /price &lt;pair&gt; - Get prices for any pair via CCXT\n"
         "- /polyarb - Check Polymarket for YES/NO arbitrage\n"
+        "- /polyml - Rank Polymarket markets with news/sentiment signal\n"
+        "- /trending - Show trending Polymarket markets\n"
+        "- /clusters - Group similar Polymarket markets\n"
+        "- /xarb - Cross-market mismatches (Polymarket vs Kalshi)\n"
         "- /crossarb [min_similarity] - Cross-market scan (Polymarket &lt;-&gt; Kalshi)\n"
         "- /help - Full help and examples"
     )
@@ -121,6 +192,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "- <code>/scan [pair]</code> - Scan a pair (default BTC/USDT) via CCXT\n"
         "- <code>/price &lt;pair&gt;</code> - Get prices for any <code>BASE/QUOTE</code>\n"
         "- <code>/polyarb</code> - Detect internal Polymarket binary arbitrage\n"
+        "- <code>/polyml</code> - Rank Polymarket markets with news/sentiment signal\n"
+        "- <code>/trending</code> - Show trending Polymarket markets (news/price/volume)\n"
+        "- <code>/clusters</code> - Group similar Polymarket markets\n"
+        "- <code>/xarb</code> - Cross-market mismatches (Polymarket vs Kalshi)\n"
         "- <code>/crossarb [min_similarity]</code> - Cross-market scan between Polymarket and Kalshi. Optional similarity (0-1).\n\n"
         "Examples:\n"
         "<code>/scan</code>\n"
@@ -227,25 +302,320 @@ async def polyarb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         parse_mode="HTML",
     )
     try:
-        results = find_polymarket_arbitrage()
+        results = scan_polymarket_raw(limit=200, threshold=0.02)
         if not results:
             await processing_msg.edit_text("No Polymarket arbitrage found right now.", parse_mode="HTML")
             return
-        out_lines = ["<b>Polymarket Arbitrage</b>\n"]
+
+        def _esc(text: str) -> str:
+            return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        out_lines = ["<b>Polymarket Arbitrage</b> (top 5)\n"]
         for r in results[:5]:
-            q = r.get("question", "")
+            q = _esc(r.get("question", ""))
+            if len(q) > 120:
+                q = q[:120] + "..."
             yes = r.get("yes_price", 0.0)
             no = r.get("no_price", 0.0)
             total = r.get("total", 0.0)
             profit = r.get("profit_pct", 0.0)
+            vol = r.get("volume", 0.0)
             out_lines.append(
-                f"Question: {q}\nYES: {yes:.2f} NO: {no:.2f} Total: {total:.2f} Profit: {profit:.2f}%\n"
+                f"{q}\n"
+                f"YES: {yes:.3f}  NO: {no:.3f}  TOTAL: {total:.3f}  Profit: {profit:.2f}%  Volume: {vol:.0f}\n"
             )
-        message = "\n".join(out_lines)
-        await processing_msg.edit_text(message, parse_mode="HTML")
+        await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
     except Exception as exc:
         await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")
         logger.error("Error in polyarb_command: %s", exc, exc_info=True)
+
+
+async def polyml_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    processing_msg = await update.message.reply_text(
+        "Ranking Polymarket opportunities...",
+        parse_mode="HTML",
+    )
+    try:
+        results = scan_polymarket_ml(limit=200, top_n=5)
+        if not results:
+            await processing_msg.edit_text("No high-quality opportunities right now.", parse_mode="HTML")
+            return
+
+        def _esc(text: str) -> str:
+            return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        out_lines = ["<b>Polymarket Opportunities (ML)</b>\n"]
+        for r in results:
+            q = _esc(r.get("question", ""))
+            if len(q) > 120:
+                q = q[:120] + "..."
+            yes = r.get("yes_price", 0.0)
+            no = r.get("no_price", 0.0)
+            vol = r.get("volume", 0.0)
+            news = r.get("news_mentions", 0)
+            sent = r.get("sentiment", 0.0)
+            ev = r.get("ev", 0.0)
+            score = r.get("opportunity_score", 0.0)
+            out_lines.append(
+                f"{q}\n"
+                f"YES: {yes:.3f}  NO: {no:.3f}  Vol: {vol:.0f}  News: {news}  Sent: {sent:.2f}\n"
+                f"EV: {ev:.3f}  Score: {score:.1f}\n"
+            )
+        sent = await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
+        try:
+            enriched = log_opportunities("polyml", results)
+            if enriched:
+                short_ids = [it.get("short_id") for it in enriched if it.get("short_id")]
+                if short_ids:
+                    await sent.reply_text(f"IDs: {', '.join(short_ids)}", parse_mode="HTML")
+        except Exception:
+            pass
+    except Exception as exc:
+        await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")
+        logger.error("Error in polyml_command: %s", exc, exc_info=True)
+
+
+async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    processing_msg = await update.message.reply_text(
+        "Finding trending Polymarket markets...",
+        parse_mode="HTML",
+    )
+    try:
+        results = scan_polymarket_trending(limit=200, top_n=5)
+        if not results:
+            await processing_msg.edit_text("No high-quality opportunities right now.", parse_mode="HTML")
+            return
+
+        def _esc(text: str) -> str:
+            return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        out_lines = ["<b>Trending Polymarket Markets</b>\n"]
+        for r in results:
+            q = _esc(r.get("question", ""))
+            if len(q) > 120:
+                q = q[:120] + "..."
+            yes = r.get("yes_price", 0.0)
+            no = r.get("no_price", 0.0)
+            vol = r.get("volume", 0.0)
+            news = r.get("news_mentions", 0)
+            score = r.get("trend_score", 0.0)
+            reasons = r.get("reasons", [])
+            reason_txt = ", ".join(reasons) if reasons else "signal"
+            out_lines.append(
+                f"{q}\n"
+                f"YES: {yes:.3f}  NO: {no:.3f}  Vol: {vol:.0f}  News: {news}  Trend: {score:.1f} ({reason_txt})\n"
+            )
+        sent = await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
+        try:
+            enriched = log_opportunities("trending", results)
+            if enriched:
+                short_ids = [it.get("short_id") for it in enriched if it.get("short_id")]
+                if short_ids:
+                    await sent.reply_text(f"IDs: {', '.join(short_ids)}", parse_mode="HTML")
+        except Exception:
+            pass
+    except Exception as exc:
+        await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")
+        logger.error("Error in trending_command: %s", exc, exc_info=True)
+
+
+async def clusters_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    processing_msg = await update.message.reply_text(
+        "Clustering Polymarket markets...",
+        parse_mode="HTML",
+    )
+    try:
+        clusters = scan_polymarket_clusters(limit=200, top_k_clusters=5)
+        if not clusters:
+            await processing_msg.edit_text("No clusters available right now.", parse_mode="HTML")
+            return
+
+        def _esc(text: str) -> str:
+            return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        out_lines = ["<b>Polymarket Clusters</b>\n"]
+        for cl in clusters:
+            rep = _esc(cl.get("representative_question", ""))
+            if len(rep) > 120:
+                rep = rep[:120] + "..."
+            vol = cl.get("cluster_volume_sum", 0.0)
+            out_lines.append(f"• {rep}\n  Total Vol: {vol:.0f}")
+            markets = cl.get("markets", [])[:3]
+            for m in markets:
+                mq = _esc(m.get("question", ""))
+                if len(mq) > 80:
+                    mq = mq[:80] + "..."
+                yes = m.get("yes_price", 0.0)
+                no = m.get("no_price", 0.0)
+                mv = m.get("volume", 0.0)
+                out_lines.append(f"  - {mq}\n    YES: {yes:.3f}  NO: {no:.3f}  Vol: {mv:.0f}")
+            out_lines.append("")
+        await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
+    except Exception as exc:
+        await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")
+        logger.error("Error in clusters_command: %s", exc, exc_info=True)
+
+
+async def xarb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    processing_msg = await update.message.reply_text(
+        "Scanning cross-market mismatches (Polymarket vs Kalshi)...",
+        parse_mode="HTML",
+    )
+    try:
+        results, error = scan_cross_market_mismatches(limit=200, top_n=5)
+        if error:
+            await processing_msg.edit_text(error, parse_mode="HTML")
+            return
+        if not results:
+            await processing_msg.edit_text("No cross-market mismatches found right now.", parse_mode="HTML")
+            return
+
+        def _esc(text: str) -> str:
+            return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        out_lines = ["<b>Cross-market Mismatches</b>\n<i>Warning: different settlement rules; this is not risk-free.</i>\n"]
+        for r in results:
+            pq = _esc(r.get("question_poly", ""))
+            kq = _esc(r.get("question_kalshi", ""))
+            if len(pq) > 120:
+                pq = pq[:120] + "..."
+            if len(kq) > 120:
+                kq = kq[:120] + "..."
+            sim = r.get("similarity", 0.0)
+            edge = r.get("edge_pct", 0.0)
+            py = r.get("poly_yes", 0.0)
+            ky = r.get("kalshi_yes", 0.0)
+            pv = r.get("poly_volume", 0.0)
+            kv = r.get("kalshi_volume", 0.0)
+            conf = r.get("confidence", 0.0)
+            conf_label = r.get("confidence_label", "LOW")
+            settle_sim = r.get("settlement_sim", 0.0)
+            out_lines.append(
+                f"Sim: {sim:.2f}  Settle: {settle_sim:.2f}  Edge: {edge:.2f}%\n"
+                f"Conf: {conf:.1f} ({conf_label})\n"
+                f"Poly YES: {py:.3f}  Kalshi YES: {ky:.3f}\n"
+                f"Poly Vol: {pv:.0f}  Kalshi Vol: {kv:.0f}\n"
+                f"P: {pq}\n"
+                f"K: {kq}\n"
+            )
+        sent = await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
+        try:
+            enriched = log_opportunities("xarb", results)
+            if enriched:
+                short_ids = [it.get("short_id") for it in enriched if it.get("short_id")]
+                if short_ids:
+                    await sent.reply_text(f"IDs: {', '.join(short_ids)}", parse_mode="HTML")
+        except Exception:
+            pass
+    except Exception as exc:
+        await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")
+        logger.error("Error in xarb_command: %s", exc, exc_info=True)
+
+
+def _match_short_id(short_id: str, items: list[dict]) -> str | None:
+    for it in items:
+        if short_id == (it.get("short_id") or ""):
+            return it.get("opportunity_id")
+    return None
+
+
+async def toggle_xarb_alert(update: Update, context: ContextTypes.DEFAULT_TYPE, enabled: bool) -> None:
+    save_xarb_alert_flag(enabled)
+    status = "enabled" if enabled else "disabled"
+    note = ""
+    if enabled and context.job_queue is None:
+        note = " (job queue unavailable; alerts won't run until enabled)"
+    await update.message.reply_text(f"Cross-market alerting {status}.{note}", parse_mode="HTML")
+
+
+async def watch_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if len(context.args) < 2:
+        await update.message.reply_text("Usage: /watch_add <platform> <market_id>", parse_mode="HTML")
+        return
+    platform, market_id = context.args[0].lower(), context.args[1]
+    add_to_watchlist(platform, market_id)
+    await update.message.reply_text(f"Added to watchlist: {platform} {market_id}", parse_mode="HTML")
+
+
+async def watch_rm_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if len(context.args) < 2:
+        await update.message.reply_text("Usage: /watch_rm <platform> <market_id>", parse_mode="HTML")
+        return
+    platform, market_id = context.args[0].lower(), context.args[1]
+    remove_from_watchlist(platform, market_id)
+    await update.message.reply_text(f"Removed from watchlist: {platform} {market_id}", parse_mode="HTML")
+
+
+async def watch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    wl = list_watchlist()
+    pm = wl.get("polymarket", [])
+    kal = wl.get("kalshi", [])
+    if not pm and not kal:
+        await update.message.reply_text("Watchlist is empty.", parse_mode="HTML")
+        return
+    lines = ["<b>Watchlist</b>"]
+    if pm:
+        lines.append("Polymarket:")
+        lines.append(", ".join(pm))
+    if kal:
+        lines.append("Kalshi:")
+        lines.append(", ".join(kal))
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def watch_scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    processing_msg = await update.message.reply_text("Scanning watchlist...", parse_mode="HTML")
+    results, err = scan_watchlist(top_n=5)
+    if err:
+        await processing_msg.edit_text(err, parse_mode="HTML")
+        return
+    if not results:
+        await processing_msg.edit_text("No watchlist opportunities right now.", parse_mode="HTML")
+        return
+    def _esc(text: str) -> str:
+        return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    out = ["<b>Watchlist Cross-Market Mismatches</b>"]
+    for r in results:
+        pq = _esc(r.get("question_poly", ""))
+        kq = _esc(r.get("question_kalshi", ""))
+        if len(pq) > 120:
+            pq = pq[:120] + "..."
+        if len(kq) > 120:
+            kq = kq[:120] + "..."
+        out.append(
+            f"Score: {r.get('score',0.0):.1f} Conf: {r.get('confidence',0.0):.1f}\n"
+            f"P: {pq}\nK: {kq}\n"
+        )
+    await processing_msg.edit_text("\n".join(out), parse_mode="HTML")
+
+
+async def label_short(update: Update, context: ContextTypes.DEFAULT_TYPE, label: str) -> None:
+    chat_id = str(update.effective_chat.id)
+    if not _is_admin(chat_id):
+        await update.message.reply_text("Not authorized to label.", parse_mode="HTML")
+        return
+    if not context.args:
+        await update.message.reply_text("Provide short_id", parse_mode="HTML")
+        return
+    short_id = context.args[0]
+    # search recent log entries for matching short_id
+    recent = []
+    try:
+        log_file = DATA_DIR / "logs" / "opportunities.jsonl"
+        if log_file.exists():
+            lines = log_file.read_text(encoding="utf-8").splitlines()
+            for line in reversed(lines[-200:]):
+                import json
+                obj = json.loads(line)
+                items = obj.get("items") or []
+                oid = _match_short_id(short_id, items)
+                if oid:
+                    save_label(oid, label)
+                    await update.message.reply_text(f"Labeled {short_id} as {label}", parse_mode="HTML")
+                    return
+    except Exception:
+        pass
+    await update.message.reply_text("No matching opportunity found.", parse_mode="HTML")
 
 
 async def crossarb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -431,12 +801,29 @@ def main() -> None:
     application.bot_data["alert_cooldown_sec"] = alert_cooldown_min * 60
     application.bot_data["alert_improve_pct"] = alert_improve * 100.0
     application.bot_data["watch_interval"] = watch_interval
+    application.bot_data["xarb_alert_interval"] = int(os.getenv("XARB_ALERT_INTERVAL", "600"))
+    application.bot_data["xarb_alert_score_min"] = float(os.getenv("XARB_ALERT_SCORE_MIN", "20"))
+    application.bot_data["xarb_alert_cooldown_sec"] = int(os.getenv("XARB_ALERT_COOLDOWN", "60")) * 60
+    application.bot_data["xarb_alert_improve"] = float(os.getenv("XARB_ALERT_IMPROVE", "1.0"))
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("scan", scan_command))
     application.add_handler(CommandHandler("price", price_command))
     application.add_handler(CommandHandler("polyarb", polyarb_command))
+    application.add_handler(CommandHandler("polyml", polyml_command))
+    application.add_handler(CommandHandler("trending", trending_command))
+    application.add_handler(CommandHandler("clusters", clusters_command))
+    application.add_handler(CommandHandler("xarb", xarb_command))
+    application.add_handler(CommandHandler("watch_add", watch_add_command))
+    application.add_handler(CommandHandler("watch_rm", watch_rm_command))
+    application.add_handler(CommandHandler("watch", watch_command))
+    application.add_handler(CommandHandler("watch_scan", watch_scan_command))
+    application.add_handler(CommandHandler("xarb_alert_on", lambda u, c: toggle_xarb_alert(u, c, True)))
+    application.add_handler(CommandHandler("xarb_alert_off", lambda u, c: toggle_xarb_alert(u, c, False)))
+    application.add_handler(CommandHandler("label_good", lambda u, c: label_short(u, c, "good")))
+    application.add_handler(CommandHandler("label_bad", lambda u, c: label_short(u, c, "bad")))
+    application.add_handler(CommandHandler("label_unknown", lambda u, c: label_short(u, c, "unknown")))
     application.add_handler(CommandHandler("crossarb", crossarb_command))
     application.add_handler(CommandHandler("alerts", alerts_command))
     application.add_handler(CommandHandler("watch_on", watch_on_command))
@@ -448,6 +835,10 @@ def main() -> None:
         jq = application.job_queue
         cooldown_sec = alert_cooldown_min * 60
         improve_pct = alert_improve * 100.0
+        xarb_interval = application.bot_data["xarb_alert_interval"]
+        xarb_score_min = application.bot_data["xarb_alert_score_min"]
+        xarb_cooldown = application.bot_data["xarb_alert_cooldown_sec"]
+        xarb_improve = application.bot_data["xarb_alert_improve"]
 
         async def _cross_arb_job(context: ContextTypes.DEFAULT_TYPE):
             try:
@@ -516,6 +907,69 @@ def main() -> None:
                 return
 
         jq.run_repeating(_cross_arb_job, interval=180, first=10)
+
+        async def _xarb_job(context: ContextTypes.DEFAULT_TYPE):
+            try:
+                if not load_xarb_alert_flag():
+                    return
+                results, error = scan_cross_market_mismatches(limit=200, top_n=5)
+                if error or not results:
+                    return
+                seen = load_xarb_seen()
+                new_out = []
+                now_ts = int(time.time())
+                for r in results:
+                    score = float(r.get("score", 0.0) or 0.0)
+                    if score < xarb_score_min:
+                        continue
+                    fp_payload = f"{r.get('question_poly','')}|{r.get('question_kalshi','')}"
+                    fp = str(hash(fp_payload))
+                    ok, tag, prev_val = should_alert(seen, fp, score, xarb_cooldown, xarb_improve, now_ts)
+                    if not ok:
+                        continue
+                    seen[fp] = {"ts": now_ts, "edge": score}
+                    r["alert_tag"] = tag
+                    r["prev_score"] = prev_val
+                    new_out.append(r)
+                if not new_out:
+                    save_xarb_seen(seen)
+                    return
+                out_lines = ["<b>Cross-market Mismatch Alert</b>\n<i>Not risk-free; settlement may differ.</i>\n"]
+                for r in new_out[:3]:
+                    tag = r.get("alert_tag", "NEW")
+                    prev_score = r.get("prev_score", 0.0)
+                    out_lines.append(
+                        f"[{tag}] Sim: {r.get('similarity',0.0):.2f} Score: {r.get('score',0.0):.1f} (prev {prev_score:.1f})\n"
+                        f"Edge: {r.get('edge_pct',0.0):.2f}%  Poly YES: {r.get('poly_yes',0.0):.3f}  Kalshi YES: {r.get('kalshi_yes',0.0):.3f}\n"
+                        f"P: {r.get('question_poly','')}\n"
+                        f"K: {r.get('question_kalshi','')}\n"
+                    )
+                try:
+                    recipients = {str(alert_chat)}
+                    enabled_file = DATA_DIR / "alerts_chats.json"
+                    enabled_chats = {}
+                    try:
+                        if enabled_file.exists():
+                            enabled_chats = json.loads(enabled_file.read_text(encoding="utf-8"))
+                    except Exception:
+                        enabled_chats = {}
+                    for cid, val in enabled_chats.items():
+                        try:
+                            if val:
+                                recipients.add(str(cid))
+                        except Exception:
+                            continue
+                    for cid in recipients:
+                        try:
+                            await context.bot.send_message(chat_id=cid, text="\n".join(out_lines), parse_mode="HTML")
+                        except Exception:
+                            continue
+                finally:
+                    save_xarb_seen(seen)
+            except Exception:
+                return
+
+        jq.run_repeating(_xarb_job, interval=xarb_interval, first=15)
     elif alert_chat and application.job_queue is None:
         logger.warning("TELEGRAM_ALERT_CHAT_ID set but JobQueue unavailable; alerts/watch scheduling disabled. Install python-telegram-bot[job-queue] or enable job queue.")
 

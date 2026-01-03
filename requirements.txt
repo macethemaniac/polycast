@@ -13,3 +13,7 @@ pydantic
 python-dotenv
 python-telegram-bot
 requests
+vaderSentiment
+numpy
+sentence-transformers
+joblib

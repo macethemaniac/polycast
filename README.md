@@ -118,6 +118,32 @@ arbitrage_mvp/
 
 ## Notes
 
+### Kalshi (read-only) and Cross-Market Mismatches
+- Set `KALSHI_API_KEY` and `KALSHI_API_SECRET` (or `KALSHI_API_TOKEN`) if your Kalshi endpoint requires auth. Without them, `/xarb` will report Kalshi data unavailable.
+- Bot commands (if using the Telegram bot):
+  - `/xarb` — show top cross-market mismatches Polymarket vs Kalshi (warning: different settlement rules; not risk-free)
+  - `/xarb_alert_on` / `/xarb_alert_off` — toggle periodic cross-market alerts (requires JobQueue enabled)
+- `/watch_add <platform> <market_id>`, `/watch_rm <platform> <market_id>`, `/watch`, `/watch_scan` — manage and scan a cross-market watchlist
+- The cross-market scan is read-only and intended for monitoring mispricings, not trading.
+
+Confidence & settlement similarity
+- Cross-market matches compute a settlement similarity (rules/description embeddings + time alignment) and a confidence score (settlement similarity, semantic similarity, liquidity, time-to-expiry).
+- Confidence labels: HIGH (>=75), MEDIUM (55-74), LOW (<55). Low confidence means settlement/rules may differ; always verify before acting.
+
+Logs & analysis
+- Opportunities logged to `data/logs/opportunities.jsonl` (append-only JSONL).
+- Analyze via: `python scripts/analyze_logs.py` to see counts, score distribution, and recurring markets.
+
+Supervised model (optional)
+- Labels are derived by checking if future snapshots (within a horizon) improved EV/edge/price; otherwise 0, unknown if not enough data.
+- Train: `python scripts/train_model.py --horizon_minutes 120 --min_samples 200`
+- Enable at runtime: set `USE_SUPERVISED_MODEL=true` (falls back to heuristics if model missing).
+
+Active learning & labels
+- Alerts show an ID; admins can label via Telegram: `/label_good <short_id>`, `/label_bad <short_id>`, `/label_unknown <short_id>`.
+- Labels are stored in `data/labels/opportunity_labels.jsonl` and used by the training script (human labels override proxy labels).
+- Calibration can be enabled via stored calibrator (see `src/ml/calibration.py`); model inference will apply it automatically if present.
+
 - This is an MVP focusing only on arbitrage price comparison
 - No authentication required (uses public APIs)
 - No database or persistence layer
