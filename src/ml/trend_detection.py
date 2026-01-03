@@ -135,11 +135,14 @@ def compute_trend_scores(markets: List[Dict], prev_state: Dict[str, Dict]) -> Tu
     new_state = prev_state.copy()
     for m, score in zip(meta, scaled):
         reasons = []
-        if m["volume_delta"] > max(0.0, 0.2 * (m["volume"] - m["volume_delta"])):
+        # Looser thresholds: any positive volume change or modest relative lift
+        if m["volume_delta"] > 0 or (m["volume"] > 0 and m["volume_delta"] / max(m["volume"], 1.0) > 0.02):
             reasons.append("volume spike")
-        if m["price_delta"] >= 0.05:
+        # Smaller price move threshold
+        if m["price_delta"] >= 0.02:
             reasons.append("price jump")
-        if m["news_mentions"] >= 3:
+        # Lower news bar
+        if m["news_mentions"] >= 1:
             reasons.append("news spike")
 
         results.append({

@@ -26,6 +26,17 @@ def get_trending_polymarket(limit: int = 200, top_n: int = 5) -> List[Dict]:
         scored, new_state = compute_trend_scores(normalized, state)
         save_state(new_state)
         scored.sort(key=lambda x: x.get("trend_score", 0.0), reverse=True)
-        return scored[:top_n]
+        if scored:
+            return scored[:top_n]
+        # Fallback: show top volume markets if no spikes detected
+        fallback = sorted(normalized, key=lambda x: x.get("volume", 0.0), reverse=True)[:top_n]
+        out = []
+        for m in fallback:
+            out.append({
+                **m,
+                "trend_score": 0.0,
+                "reasons": ["fallback: top volume"],
+            })
+        return out
     except Exception:
         return []
