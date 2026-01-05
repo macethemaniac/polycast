@@ -33,22 +33,43 @@ def normalize_polymarket_market(m: Dict) -> Dict | None:
     Skips markets that do not have binary yes/no prices.
     """
     try:
+        import json
+
         market_id = m.get("id") or m.get("_id")
         question = m.get("question") or m.get("title") or ""
-        outcomes: List[Dict] = m.get("outcomes") or []
-        if not outcomes or len(outcomes) < 2:
+
+        # Polymarket returns outcomes and prices as JSON strings
+        outcome_prices_str = m.get("outcomePrices") or m.get("prices")
+        if not outcome_prices_str:
             return None
 
-        # Attempt to identify yes/no outcomes
-        yes = outcomes[0]
-        no = outcomes[1]
-        yes_price = yes.get("price") or yes.get("bestBid") or yes.get("bid")
-        no_price = no.get("price") or no.get("bestBid") or no.get("bid")
-        if yes_price is None or no_price is None:
+        # Parse the JSON string to get price list
+        try:
+            if isinstance(outcome_prices_str, str):
+                prices = json.loads(outcome_prices_str)
+            elif isinstance(outcome_prices_str, list):
+                prices = outcome_prices_str
+            else:
+                return None
+        except (json.JSONDecodeError, TypeError):
             return None
 
-        volume = m.get("volume") or 0
-        liquidity = m.get("liquidity") or 0
+        if not prices or len(prices) < 2:
+            return None
+
+        # Convert string prices to floats
+        try:
+            yes_price = float(prices[0])
+            no_price = float(prices[1])
+        except (ValueError, TypeError, IndexError):
+            return None
+
+        # Skip if prices are invalid
+        if yes_price is None or no_price is None or yes_price < 0 or no_price < 0:
+            return None
+
+        volume = m.get("volume") or m.get("volumeNum") or 0
+        liquidity = m.get("liquidity") or m.get("liquidityNum") or 0
         updated_at = m.get("updatedAt") or m.get("updated_at")
         close_time = m.get("end_date") or m.get("endDate") or m.get("closeTime")
         description = m.get("description") or ""
