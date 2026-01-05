@@ -6,15 +6,15 @@ that can be used by both console and Telegram bot interfaces.
 """
 
 from typing import Dict, Optional, Tuple, List
-from ..exchanges.ccxt_client import get_ccxt_prices, DEFAULT_EXCHANGES
+from src.exchanges.ccxt_client import get_ccxt_prices, DEFAULT_EXCHANGES
 from polycast.analytics.arbitrage import check_arbitrage
-from ..exchanges.polymarket import fetch_polymarket_markets, normalize_polymarket_market
-from ..exchanges.kalshi import fetch_kalshi_markets, normalize_kalshi_market
-from ..engines.opportunity_ranker import rank_polymarket_opportunities
-from ..engines.trend_engine import get_trending_polymarket
-from ..ml.market_clustering import cluster_markets
-from ..engines.cross_market_matcher import match_markets_by_embedding
-from ..engines.cross_arbitrage import detect_mismatches
+from src.exchanges.polymarket import fetch_polymarket_markets, normalize_polymarket_market
+from src.exchanges.kalshi import fetch_kalshi_markets, normalize_kalshi_market
+from src.engines.opportunity_ranker import rank_polymarket_opportunities
+from src.engines.trend_engine import get_trending_polymarket
+from src.ml.market_clustering import cluster_markets
+from src.engines.cross_market_matcher import match_markets_by_embedding
+from src.engines.cross_arbitrage import detect_mismatches
 
 
 def scan_arbitrage(

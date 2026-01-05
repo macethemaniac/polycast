@@ -30,14 +30,14 @@ from polycast.scanner import (
     scan_polymarket_clusters,
     scan_cross_market_mismatches,
 )
-from ..engines.watchlist import (
+from src.engines.watchlist import (
     add_to_watchlist,
     remove_from_watchlist,
     list_watchlist,
     scan_watchlist,
 )
-from ..opportunity_logger import log_opportunities
-from ..ml.label_store import save_label, load_labels
+from src.opportunity_logger import log_opportunities
+from src.ml.label_store import save_label, load_labels
 from polycast.cross_arb import find_cross_market_arbitrage
 
 logging.basicConfig(
