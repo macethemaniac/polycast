@@ -121,39 +121,72 @@ def find_cross_market_arbitrage(
     }
 
     # Adapter-backed market fetch with diagnostics
-    pol_markets_raw, pol_meta = fetch_polymarket_markets(limit_pol, return_debug=True)
-    pol_markets = []
-    for m in pol_markets_raw:
-        if isinstance(m, Market):
-            pol_markets.append(m.raw)
-        else:
-            pol_markets.append(m)
-    debug["polymarket"] = {
-        "count": pol_meta.get("count", len(pol_markets_raw)),
-        "attempts": pol_meta.get("attempts", []),
-        "error": pol_meta.get("error"),
-    }
+    try:
+        pol_markets_raw, pol_meta = fetch_polymarket_markets(limit_pol, return_debug=True)
+        pol_markets = []
+        for m in pol_markets_raw:
+            if isinstance(m, Market):
+                pol_markets.append(m.raw)
+            else:
+                pol_markets.append(m)
+        debug["polymarket"] = {
+            "count": pol_meta.get("count", len(pol_markets_raw)),
+            "attempts": pol_meta.get("attempts", []),
+            "error": pol_meta.get("error"),
+        }
+    except Exception as e:
+        pol_markets = []
+        debug["polymarket"] = {
+            "count": 0,
+            "attempts": [],
+            "error": str(e),
+        }
+        debug["errors"].append(f"Polymarket fetch error: {e}")
 
-    kal_markets_raw, kal_meta = fetch_kalshi_markets(limit_kal, return_debug=True)
-    kal_markets = []
-    for m in kal_markets_raw:
-        if isinstance(m, dict) and m.get('outcomes'):
-            kal_markets.append(m)
-            continue
-        converted = kalshi_market_to_generic(m)
-        if converted and converted.get('outcomes'):
-            kal_markets.append(converted)
-    debug["kalshi"] = {
-        "count": kal_meta.get("count", len(kal_markets_raw)) if isinstance(kal_meta, dict) else len(kal_markets_raw),
-        "attempts": kal_meta.get("attempts", []) if isinstance(kal_meta, dict) else [],
-        "error": kal_meta.get("error") if isinstance(kal_meta, dict) else None,
-    }
+    try:
+        kal_markets_raw, kal_meta = fetch_kalshi_markets(limit_kal, return_debug=True)
+        kal_markets = []
+        for m in kal_markets_raw:
+            if isinstance(m, dict) and m.get('outcomes'):
+                kal_markets.append(m)
+                continue
+            converted = kalshi_market_to_generic(m)
+            if converted and converted.get('outcomes'):
+                kal_markets.append(converted)
+        debug["kalshi"] = {
+            "count": kal_meta.get("count", len(kal_markets_raw)) if isinstance(kal_meta, dict) else len(kal_markets_raw),
+            "attempts": kal_meta.get("attempts", []) if isinstance(kal_meta, dict) else [],
+            "error": kal_meta.get("error") if isinstance(kal_meta, dict) else None,
+        }
+    except Exception as e:
+        kal_markets = []
+        debug["kalshi"] = {
+            "count": 0,
+            "attempts": [],
+            "error": str(e),
+        }
+        debug["errors"].append(f"Kalshi fetch error: {e}")
 
     # Build adapter-based market lists for matching
-    pm_markets_for_match = pm_adapter.list_markets(limit=limit_pol, return_debug=False)
-    kal_markets_for_match = kal_adapter.list_markets(limit=limit_kal, return_debug=False)
-    match_results = match_markets(pm_markets_for_match, kal_markets_for_match, top_k=5, min_confidence=min_similarity)
-    debug["matching"] = match_results
+    try:
+        pm_markets_for_match = pm_adapter.list_markets(limit=limit_pol, return_debug=False)
+    except Exception as e:
+        pm_markets_for_match = []
+        debug["errors"].append(f"Polymarket adapter error: {e}")
+
+    try:
+        kal_markets_for_match = kal_adapter.list_markets(limit=limit_kal, return_debug=False)
+    except Exception as e:
+        kal_markets_for_match = []
+        debug["errors"].append(f"Kalshi adapter error: {e}")
+
+    try:
+        match_results = match_markets(pm_markets_for_match, kal_markets_for_match, top_k=5, min_confidence=min_similarity)
+        debug["matching"] = match_results
+    except Exception as e:
+        match_results = {}
+        debug["matching"] = {}
+        debug["errors"].append(f"Market matching error: {e}")
     # If explicit Kalshi series IDs are provided, fetch and include them
     if kal_series_ids:
         for sid in kal_series_ids:
@@ -354,6 +387,8 @@ def find_cross_market_arbitrage(
     for pol_m, pol_p, pol_title in pol_binaries:
         pm_id = pol_m.get('id') or pol_m.get('slug') or pol_m.get('title') or pol_m.get('question') or pol_title
         candidates = match_results.get(pm_id, {}).get("matches", [])
+        if not isinstance(candidates, list):
+            candidates = []
         allowed_ids = {c.get("kal_id") for c in candidates if c.get("kal_id")}
         kal_candidates = [kb for kb in kal_binaries if (kb[0].get('id') or kb[0].get('ticker') or kb[0].get('event_ticker') or kb[2]) in allowed_ids] if allowed_ids else []
         if not kal_candidates:

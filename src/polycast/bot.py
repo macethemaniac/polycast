@@ -6,6 +6,7 @@ Polymarket/Kalshi arbitrage, with optional scheduled watch and deduped alerts.
 """
 
 import argparse
+import asyncio
 import json
 import logging
 import os
@@ -14,7 +15,12 @@ from pathlib import Path
 from typing import Any, Dict, Tuple, List
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    CallbackQueryHandler,
+)
 
 from polycast.scanner import (
     scan_arbitrage,
@@ -24,20 +30,14 @@ from polycast.scanner import (
     scan_polymarket_clusters,
     scan_cross_market_mismatches,
 )
-from engines.watchlist import (
+from ..engines.watchlist import (
     add_to_watchlist,
     remove_from_watchlist,
     list_watchlist,
     scan_watchlist,
 )
-from logging.opportunity_logger import log_opportunities
-from ml.label_store import save_label, load_labels
-from engines.watchlist import (
-    add_to_watchlist,
-    remove_from_watchlist,
-    list_watchlist,
-    scan_watchlist,
-)
+from ..opportunity_logger import log_opportunities
+from ..ml.label_store import save_label, load_labels
 from polycast.cross_arb import find_cross_market_arbitrage
 
 logging.basicConfig(
@@ -46,7 +46,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 SEEN_OPPS_FILE = DATA_DIR / "seen_opps.json"
 XARB_ALERTS_FILE = DATA_DIR / "xarb_alerts.json"
@@ -784,7 +784,12 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--alert-cooldown", type=int, default=int(os.getenv("ALERT_COOLDOWN", "30")), help="Cooldown in minutes for repeating alerts")
-    parser.add_argument("--alert-improve", type=float, default=float(os.getenv("ALERT_IMPROVE", "0.005")), help="Required improvement in edge to resend within cooldown (fraction, e.g., 0.005 = 0.5%)")
+    parser.add_argument(
+        "--alert-improve",
+        type=float,
+        default=float(os.getenv("ALERT_IMPROVE", "0.005")),
+        help="Required improvement in edge to resend within cooldown (fraction, e.g., 0.005 = 0.5%%)",
+    )
     parser.add_argument("--watch-interval", type=int, default=int(os.getenv("WATCH_INTERVAL", "300")), help="Watch interval seconds")
     args, _ = parser.parse_known_args()
     alert_cooldown_min = args.alert_cooldown
@@ -797,7 +802,7 @@ def main() -> None:
         print("ERROR: TELEGRAM_BOT_TOKEN environment variable is required.")
         return
 
-    application = Application.builder().token(bot_token).build()
+    application = ApplicationBuilder().token(bot_token).build()
     application.bot_data["alert_cooldown_sec"] = alert_cooldown_min * 60
     application.bot_data["alert_improve_pct"] = alert_improve * 100.0
     application.bot_data["watch_interval"] = watch_interval
@@ -975,6 +980,8 @@ def main() -> None:
 
     logger.info("Bot starting...")
     print("Bot is running. Press Ctrl+C to stop.")
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

@@ -1,5 +1,5 @@
 import time
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import requests
 
@@ -7,7 +7,7 @@ from . import Market, Outcome, OrderBook
 
 _MARKET_CACHE: Dict[str, Market] = {}
 _ORDERBOOK_CACHE: Dict[Tuple[str, str], OrderBook] = {}
-_MARKETS_META: Dict[str, any] = {}
+_MARKETS_META: Dict[str, Any] = {}
 
 
 def _normalize_price(val: Optional[float]) -> Optional[float]:
@@ -55,7 +55,7 @@ def _build_market(obj: dict) -> Optional[Market]:
     return Market(id=market_id, title=title, outcomes=outcomes, updated_ts=updated_ts, raw=obj)
 
 
-def list_markets(limit: int = 100, return_debug: bool = False) -> Union[List[Market], Tuple[List[Market], Dict[str, any]]]:
+def list_markets(limit: int = 100, return_debug: bool = False) -> Union[List[Market], Tuple[List[Market], Dict[str, Any]]]:
     """Fetch Polymarket markets as standardized Market objects."""
     if _MARKET_CACHE:
         cached = list(_MARKET_CACHE.values())

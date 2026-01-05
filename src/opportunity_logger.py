@@ -7,7 +7,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Dict, List
 
-BASE_DIR = Path(__file__).resolve().parents[2]
+BASE_DIR = Path(__file__).resolve().parents[1]
 LOG_DIR = BASE_DIR / "data" / "logs"
 LOG_FILE = LOG_DIR / "opportunities.jsonl"
 
@@ -29,7 +29,7 @@ def _opportunity_id(item: Dict[str, Any], meta: Dict[str, Any] | None = None) ->
 
 
 def log_opportunities(command: str, payload: List[Dict[str, Any]], meta: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
-    """Append a JSON line with command, timestamp, and payload."""
+    """Append a JSON line with command, timestamp, and payload; returns enriched items."""
     try:
         _ensure_dir()
         enriched = []

@@ -1,6 +1,6 @@
 import os
 import time
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import requests
 
@@ -52,7 +52,7 @@ def _build_market(obj: dict) -> Optional[Market]:
     return market
 
 
-def list_markets(limit: int = 100, return_debug: bool = False) -> Union[List[Market], Tuple[List[Market], Dict[str, any]]]:
+def list_markets(limit: int = 100, return_debug: bool = False) -> Union[List[Market], Tuple[List[Market], Dict[str, Any]]]:
     if _MARKET_CACHE:
         cached = list(_MARKET_CACHE.values())
         meta_cached = {"attempts": [], "count": len(cached)}
