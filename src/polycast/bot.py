@@ -59,6 +59,42 @@ SEEN_OPPS_FILE = DATA_DIR / "seen_opps.json"
 XARB_ALERTS_FILE = DATA_DIR / "xarb_alerts.json"
 XARB_SEEN_FILE = DATA_DIR / "xarb_seen.json"
 LABELS_CACHE_FILE = DATA_DIR / "labels_cache.json"
+PRICE_ALERTS_FILE = DATA_DIR / "price_alerts.json"
+DIGEST_SETTINGS_FILE = DATA_DIR / "digest_settings.json"
+
+
+def load_price_alerts() -> Dict[str, List[Dict]]:
+    """Load price alerts. Structure: {chat_id: [{query, target_price, direction, created}]}"""
+    try:
+        if not PRICE_ALERTS_FILE.exists():
+            return {}
+        return json.loads(PRICE_ALERTS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_price_alerts(alerts: Dict[str, List[Dict]]) -> None:
+    try:
+        PRICE_ALERTS_FILE.write_text(json.dumps(alerts, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def load_digest_settings() -> Dict[str, Dict]:
+    """Load daily digest settings. Structure: {chat_id: {enabled, hour}}"""
+    try:
+        if not DIGEST_SETTINGS_FILE.exists():
+            return {}
+        return json.loads(DIGEST_SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_digest_settings(settings: Dict[str, Dict]) -> None:
+    try:
+        DIGEST_SETTINGS_FILE.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def load_seen(prune_older_sec: int = 7 * 24 * 3600) -> Dict[str, Dict[str, float]]:
@@ -178,14 +214,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "<b>Welcome to PolyCAS Trading Assistant!</b>\n\n"
         "Find high-confidence prediction market opportunities.\n\n"
         "<b>Main Commands</b>\n"
-        "- /discover - Find best opportunities (unified scoring)\n"
-        "- /market &lt;query&gt; - Deep-dive into any market\n"
-        "- /alerts - Manage automated notifications\n\n"
-        "<b>Quick Scans</b>\n"
-        "- /scan [pair] - Spot crypto arbitrage\n"
-        "- /polyarb - Polymarket YES/NO mispricing\n"
-        "- /xarb - Cross-market mismatches\n\n"
-        "- /help - Full help and examples"
+        "/discover [category] - Best opportunities\n"
+        "/market &lt;query&gt; - Deep-dive analysis\n"
+        "/alert &lt;query&gt; &lt;price&gt; - Price alert\n"
+        "/alerts - Toggle notifications\n"
+        "/digest - Daily summary\n\n"
+        "<b>Categories</b>\n"
+        "politics | crypto | sports | entertainment\n\n"
+        "/help - Full help and examples"
     )
     await update.message.reply_text(welcome_message, parse_mode="HTML")
 
@@ -194,32 +230,75 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     help_message = (
         "<b>Help - PolyCAS Trading Assistant</b>\n\n"
         "<b>Main Commands</b>\n"
-        "- <code>/discover</code> - Find best opportunities with unified confidence scoring\n"
+        "- <code>/discover [category]</code> - Find best opportunities\n"
         "- <code>/market &lt;query&gt;</code> - Deep-dive into any market\n"
-        "- <code>/alerts</code> - Manage alerts (on/off/settings)\n\n"
+        "- <code>/alerts</code> - Manage notifications (on/off)\n"
+        "- <code>/alert &lt;query&gt; &lt;price&gt;</code> - Set price alert\n"
+        "- <code>/digest</code> - Daily summary (on/off)\n\n"
+        "<b>Categories for /discover</b>\n"
+        "politics, crypto, sports, entertainment, all (default)\n\n"
         "<b>Quick Scans</b>\n"
-        "- <code>/scan [pair]</code> - Spot crypto arbitrage (CCXT)\n"
-        "- <code>/polyarb</code> - Polymarket YES/NO mispricing\n"
+        "- <code>/scan [pair]</code> - Spot crypto arbitrage\n"
+        "- <code>/polyarb</code> - YES/NO mispricing\n"
         "- <code>/xarb</code> - Cross-market mismatches\n\n"
-        "<b>Legacy Commands</b> (aliases)\n"
-        "- <code>/polyml</code>, <code>/trending</code>, <code>/social</code> - All run /discover\n\n"
         "<b>Examples</b>\n"
-        "<code>/discover</code> - Find top opportunities\n"
-        "<code>/market bitcoin</code> - Analyze Bitcoin markets\n"
-        "<code>/market trump election</code> - Search Trump election markets\n"
-        "<code>/alerts on</code> - Enable smart alerts"
+        "<code>/discover</code> - All categories\n"
+        "<code>/discover crypto</code> - Crypto only\n"
+        "<code>/market bitcoin</code> - Analyze Bitcoin\n"
+        "<code>/alert trump 0.60</code> - Price alert\n"
+        "<code>/digest on</code> - Daily summary at 9 AM UTC"
     )
     await update.message.reply_text(help_message, parse_mode="HTML")
 
 
+CATEGORY_KEYWORDS = {
+    "politics": ["election", "president", "trump", "biden", "vote", "congress", "senate", "governor", "political", "government", "democrat", "republican", "poll"],
+    "crypto": ["bitcoin", "btc", "ethereum", "eth", "crypto", "blockchain", "token", "coin", "defi", "nft", "solana", "ripple", "xrp"],
+    "sports": ["nfl", "nba", "mlb", "football", "basketball", "soccer", "tennis", "golf", "super bowl", "world cup", "championship", "playoff", "game", "match"],
+    "entertainment": ["movie", "oscar", "grammy", "emmy", "album", "celebrity", "music", "film", "show", "tv", "netflix", "disney", "taylor swift"],
+}
+
+
+def _filter_by_category(markets: list, category: str) -> list:
+    """Filter markets by category keywords."""
+    if not category or category == "all":
+        return markets
+
+    keywords = CATEGORY_KEYWORDS.get(category.lower(), [])
+    if not keywords:
+        return markets
+
+    filtered = []
+    for m in markets:
+        question = m.get("question", "").lower()
+        if any(kw in question for kw in keywords):
+            filtered.append(m)
+    return filtered
+
+
 async def discover_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Find best opportunities using unified confidence scoring."""
+    # Check for category filter
+    category = None
+    if context.args:
+        cat_arg = context.args[0].lower()
+        if cat_arg in CATEGORY_KEYWORDS or cat_arg == "all":
+            category = cat_arg
+
+    cat_label = f" ({category})" if category and category != "all" else ""
     processing_msg = await update.message.reply_text(
-        "Scanning for best opportunities...",
+        f"Scanning for best opportunities{cat_label}...",
         parse_mode="HTML",
     )
     try:
-        results = scan_best_opportunities(limit=50, top_n=5, min_confidence=40)
+        results = scan_best_opportunities(limit=100, top_n=20, min_confidence=40)
+
+        # Apply category filter
+        if category and category != "all":
+            results = _filter_by_category(results, category)
+            results = results[:5]  # Take top 5 after filtering
+        else:
+            results = results[:5]
         if not results:
             await processing_msg.edit_text(
                 "No high-confidence opportunities found right now.\n"
@@ -231,8 +310,9 @@ async def discover_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         def _esc(text: str) -> str:
             return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
+        cat_header = f" ({category.upper()})" if category and category != "all" else ""
         out_lines = [
-            "<b>BEST OPPORTUNITIES</b>",
+            f"<b>BEST OPPORTUNITIES{cat_header}</b>",
             "<i>Unified Confidence Scoring</i>",
             "━━━━━━━━━━━━━━━━━━━━━━"
         ]
@@ -440,319 +520,7 @@ async def polyarb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.error("Error in polyarb_command: %s", exc, exc_info=True)
 
 
-async def polyml_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    processing_msg = await update.message.reply_text(
-        "Analyzing market opportunities...",
-        parse_mode="HTML",
-    )
-    try:
-        results = scan_polymarket_ml(limit=20, top_n=5)
-        if not results:
-            await processing_msg.edit_text("No opportunities found at this time.", parse_mode="HTML")
-            return
-
-        def _esc(text: str) -> str:
-            return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-        out_lines = [
-            "<b>POLYMARKET OPPORTUNITIES</b>",
-            "<i>ML-Ranked by Expected Value</i>",
-            "━━━━━━━━━━━━━━━━━━━━━━"
-        ]
-
-        for i, r in enumerate(results, 1):
-            q = _esc(r.get("question", ""))
-            if len(q) > 100:
-                q = q[:100] + "..."
-            yes = r.get("yes_price", 0.0)
-            no = r.get("no_price", 0.0)
-            vol = r.get("volume", 0.0)
-            ev = r.get("ev", 0.0)
-            score = r.get("opportunity_score", 0.0)
-            sent_val = r.get("sentiment", 0.0)
-
-            # Determine signal based on EV and prices
-            if ev > 0 and yes < 0.5:
-                signal = "BUY YES"
-                signal_icon = "[+]"
-            elif ev > 0 and yes >= 0.5:
-                signal = "BUY NO"
-                signal_icon = "[-]"
-            elif yes < 0.3:
-                signal = "BUY YES"
-                signal_icon = "[+]"
-            elif no < 0.3:
-                signal = "BUY NO"
-                signal_icon = "[-]"
-            else:
-                signal = "HOLD"
-                signal_icon = "[=]"
-
-            # Format volume
-            if vol >= 1_000_000:
-                vol_str = f"${vol/1_000_000:.1f}M"
-            elif vol >= 1_000:
-                vol_str = f"${vol/1_000:.0f}K"
-            else:
-                vol_str = f"${vol:.0f}"
-
-            out_lines.append(f"\n<b>#{i} {signal_icon} {signal}</b>")
-            out_lines.append(f"<b>Q:</b> {q}")
-            out_lines.append(f"<b>Prices:</b> YES ${yes:.2f} | NO ${no:.2f}")
-            out_lines.append(f"<b>Volume:</b> {vol_str} | <b>EV:</b> {ev:+.3f} | <b>Score:</b> {score:.0f}")
-
-        out_lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
-        out_lines.append("<i>Positive EV = favorable odds</i>")
-
-        sent_msg = await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
-        try:
-            enriched = log_opportunities("polyml", results)
-            if enriched:
-                short_ids = [it.get("short_id") for it in enriched if it.get("short_id")]
-                if short_ids:
-                    await sent_msg.reply_text(f"Ref IDs: {', '.join(short_ids)}", parse_mode="HTML")
-        except Exception:
-            pass
-    except Exception as exc:
-        await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")
-        logger.error("Error in polyml_command: %s", exc, exc_info=True)
-
-
-async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    processing_msg = await update.message.reply_text(
-        "Scanning trending markets...",
-        parse_mode="HTML",
-    )
-    try:
-        results = scan_polymarket_trending(limit=50, top_n=5)
-        if not results:
-            await processing_msg.edit_text("No trending markets found at this time.", parse_mode="HTML")
-            return
-
-        def _esc(text: str) -> str:
-            return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-        out_lines = [
-            "<b>TRENDING MARKETS</b>",
-            "<i>High Activity &amp; Volume Spikes</i>",
-            "━━━━━━━━━━━━━━━━━━━━━━"
-        ]
-
-        for i, r in enumerate(results, 1):
-            q = _esc(r.get("question", ""))
-            if len(q) > 100:
-                q = q[:100] + "..."
-            yes = r.get("yes_price", 0.0)
-            no = r.get("no_price", 0.0)
-            vol = r.get("volume", 0.0)
-            score = r.get("trend_score", 0.0)
-            reasons = r.get("reasons", [])
-
-            # Determine signal based on price movement
-            if yes < 0.3:
-                signal = "BUY YES"
-                signal_icon = "[+]"
-            elif no < 0.3:
-                signal = "BUY NO"
-                signal_icon = "[-]"
-            elif yes > 0.7:
-                signal = "SELL YES"
-                signal_icon = "[!]"
-            elif no > 0.7:
-                signal = "SELL NO"
-                signal_icon = "[!]"
-            else:
-                signal = "WATCH"
-                signal_icon = "[~]"
-
-            # Format volume
-            if vol >= 1_000_000:
-                vol_str = f"${vol/1_000_000:.1f}M"
-            elif vol >= 1_000:
-                vol_str = f"${vol/1_000:.0f}K"
-            else:
-                vol_str = f"${vol:.0f}"
-
-            # Format reasons
-            reason_tags = " ".join([f"#{r}" for r in reasons[:2]]) if reasons else "#trending"
-
-            out_lines.append(f"\n<b>#{i} {signal_icon} {signal}</b>")
-            out_lines.append(f"<b>Q:</b> {q}")
-            out_lines.append(f"<b>Prices:</b> YES ${yes:.2f} | NO ${no:.2f}")
-            out_lines.append(f"<b>Volume:</b> {vol_str} | <b>Trend:</b> {score:.0f}/100")
-            out_lines.append(f"<i>{reason_tags}</i>")
-
-        out_lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
-        out_lines.append("<i>High trend = rapid price/volume change</i>")
-
-        sent_msg = await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
-        try:
-            enriched = log_opportunities("trending", results)
-            if enriched:
-                short_ids = [it.get("short_id") for it in enriched if it.get("short_id")]
-                if short_ids:
-                    await sent_msg.reply_text(f"Ref IDs: {', '.join(short_ids)}", parse_mode="HTML")
-        except Exception:
-            pass
-    except Exception as exc:
-        await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")
-        logger.error("Error in trending_command: %s", exc, exc_info=True)
-
-
-async def clusters_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    processing_msg = await update.message.reply_text(
-        "Analyzing related markets...",
-        parse_mode="HTML",
-    )
-    try:
-        clusters = scan_polymarket_clusters(limit=50, top_k_clusters=5)
-        if not clusters:
-            await processing_msg.edit_text("No market clusters found at this time.", parse_mode="HTML")
-            return
-
-        def _esc(text: str) -> str:
-            return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-        out_lines = [
-            "<b>RELATED MARKET CLUSTERS</b>",
-            "<i>Similar Markets Grouped Together</i>",
-            "━━━━━━━━━━━━━━━━━━━━━━"
-        ]
-
-        for i, cl in enumerate(clusters, 1):
-            rep = _esc(cl.get("representative_question", ""))
-            if len(rep) > 90:
-                rep = rep[:90] + "..."
-            vol = cl.get("cluster_volume_sum", 0.0)
-
-            # Format volume
-            if vol >= 1_000_000:
-                vol_str = f"${vol/1_000_000:.1f}M"
-            elif vol >= 1_000:
-                vol_str = f"${vol/1_000:.0f}K"
-            else:
-                vol_str = f"${vol:.0f}"
-
-            out_lines.append(f"\n<b>CLUSTER #{i}</b> | Total Vol: {vol_str}")
-            out_lines.append(f"<b>Topic:</b> {rep}")
-
-            markets = cl.get("markets", [])[:3]
-            for j, m in enumerate(markets, 1):
-                mq = _esc(m.get("question", ""))
-                if len(mq) > 70:
-                    mq = mq[:70] + "..."
-                yes = m.get("yes_price", 0.0)
-                no = m.get("no_price", 0.0)
-                mv = m.get("volume", 0.0)
-
-                # Determine signal
-                if yes < 0.3:
-                    signal = "BUY YES"
-                elif no < 0.3:
-                    signal = "BUY NO"
-                else:
-                    signal = "WATCH"
-
-                # Format market volume
-                if mv >= 1_000_000:
-                    mv_str = f"${mv/1_000_000:.1f}M"
-                elif mv >= 1_000:
-                    mv_str = f"${mv/1_000:.0f}K"
-                else:
-                    mv_str = f"${mv:.0f}"
-
-                out_lines.append(f"  {j}. [{signal}] YES ${yes:.2f} | NO ${no:.2f} | {mv_str}")
-                out_lines.append(f"     {mq}")
-
-        out_lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
-        out_lines.append("<i>Compare prices across related markets</i>")
-
-        await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
-    except Exception as exc:
-        await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")
-        logger.error("Error in clusters_command: %s", exc, exc_info=True)
-
-
-async def social_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show markets matching current social media trends (Twitter/Google Trends)."""
-    processing_msg = await update.message.reply_text(
-        "Scanning social trends (Twitter/Google)...",
-        parse_mode="HTML",
-    )
-    try:
-        results = scan_social_trending(limit=100, top_n=5)
-        if not results:
-            await processing_msg.edit_text(
-                "No markets matching social trends found right now.\n"
-                "<i>Try again later when trending topics align with prediction markets.</i>",
-                parse_mode="HTML"
-            )
-            return
-
-        def _esc(text: str) -> str:
-            return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-        out_lines = [
-            "<b>SOCIAL TRENDING MARKETS</b>",
-            "<i>Markets matching Twitter/Google Trends</i>",
-            "━━━━━━━━━━━━━━━━━━━━━━"
-        ]
-
-        for i, r in enumerate(results, 1):
-            q = _esc(r.get("question", ""))
-            if len(q) > 100:
-                q = q[:100] + "..."
-            yes = r.get("yes_price", 0.0)
-            no = r.get("no_price", 0.0)
-            vol = r.get("volume", 0.0)
-            boost = r.get("social_boost", 0.0)
-            matches = r.get("trend_matches", [])
-
-            # Determine signal based on prices
-            if yes < 0.3:
-                signal = "BUY YES"
-                signal_icon = "[+]"
-            elif no < 0.3:
-                signal = "BUY NO"
-                signal_icon = "[-]"
-            elif yes > 0.7:
-                signal = "SELL YES"
-                signal_icon = "[!]"
-            elif no > 0.7:
-                signal = "SELL NO"
-                signal_icon = "[!]"
-            else:
-                signal = "WATCH"
-                signal_icon = "[~]"
-
-            # Format volume
-            if vol >= 1_000_000:
-                vol_str = f"${vol/1_000_000:.1f}M"
-            elif vol >= 1_000:
-                vol_str = f"${vol/1_000:.0f}K"
-            else:
-                vol_str = f"${vol:.0f}"
-
-            # Format trend matches
-            if matches:
-                topics = ", ".join([_esc(m.get("topic", ""))[:20] for m in matches[:2]])
-                source = matches[0].get("source", "social") if matches else "social"
-            else:
-                topics = "trending"
-                source = "social"
-
-            out_lines.append(f"\n<b>#{i} {signal_icon} {signal}</b> | Social: {boost:.0f}/100")
-            out_lines.append(f"<b>Q:</b> {q}")
-            out_lines.append(f"<b>Prices:</b> YES ${yes:.2f} | NO ${no:.2f} | Vol: {vol_str}")
-            out_lines.append(f"<i>Trends ({source}): {topics}</i>")
-
-        out_lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
-        out_lines.append("<i>Higher social boost = stronger trend match</i>")
-
-        await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
-    except Exception as exc:
-        await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")
-        logger.error("Error in social_command: %s", exc, exc_info=True)
+# LEGACY COMMANDS REMOVED - Use /discover instead
 
 
 async def xarb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -985,6 +753,120 @@ async def alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("Usage: /alerts enable|disable|status")
 
 
+async def alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Set a price alert for a market.
+    Usage: /alert <query> <target_price>
+    Example: /alert trump 0.60
+    """
+    chat_id = str(update.effective_chat.id)
+
+    if len(context.args) < 2:
+        # Show existing alerts
+        alerts = load_price_alerts()
+        user_alerts = alerts.get(chat_id, [])
+        if not user_alerts:
+            await update.message.reply_text(
+                "<b>No price alerts set.</b>\n\n"
+                "Set an alert:\n"
+                "<code>/alert &lt;query&gt; &lt;price&gt;</code>\n\n"
+                "Examples:\n"
+                "<code>/alert trump 0.60</code> - Alert when Trump YES hits $0.60\n"
+                "<code>/alert bitcoin 0.40</code> - Alert when Bitcoin YES hits $0.40",
+                parse_mode="HTML"
+            )
+        else:
+            lines = ["<b>Your Price Alerts</b>", "━━━━━━━━━━━━━━━━━━━━"]
+            for i, a in enumerate(user_alerts, 1):
+                lines.append(f"{i}. {a['query']} → ${a['target_price']:.2f}")
+            lines.append("\nTo clear: <code>/alert clear</code>")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        return
+
+    if context.args[0].lower() == "clear":
+        alerts = load_price_alerts()
+        alerts[chat_id] = []
+        save_price_alerts(alerts)
+        await update.message.reply_text("All price alerts cleared.")
+        return
+
+    # Parse: /alert <query words...> <price>
+    try:
+        target_price = float(context.args[-1])
+        query = " ".join(context.args[:-1])
+    except ValueError:
+        await update.message.reply_text(
+            "Invalid format. Use: <code>/alert &lt;query&gt; &lt;price&gt;</code>\n"
+            "Example: <code>/alert trump 0.60</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    if not query:
+        await update.message.reply_text("Please provide a search query.")
+        return
+
+    if not 0.01 <= target_price <= 0.99:
+        await update.message.reply_text("Price must be between 0.01 and 0.99")
+        return
+
+    # Save the alert
+    alerts = load_price_alerts()
+    if chat_id not in alerts:
+        alerts[chat_id] = []
+
+    # Limit to 10 alerts per user
+    if len(alerts[chat_id]) >= 10:
+        await update.message.reply_text("Maximum 10 alerts. Use <code>/alert clear</code> to remove.", parse_mode="HTML")
+        return
+
+    alerts[chat_id].append({
+        "query": query,
+        "target_price": target_price,
+        "created": time.time(),
+    })
+    save_price_alerts(alerts)
+
+    await update.message.reply_text(
+        f"Price alert set:\n"
+        f"<b>{query}</b> → ${target_price:.2f}\n\n"
+        f"You'll be notified when YES price crosses this level.",
+        parse_mode="HTML"
+    )
+
+
+async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Enable/disable daily digest.
+    Usage: /digest on|off
+    """
+    chat_id = str(update.effective_chat.id)
+
+    if not context.args:
+        settings = load_digest_settings()
+        user_settings = settings.get(chat_id, {})
+        enabled = user_settings.get("enabled", False)
+        msg = "Daily digest is ENABLED." if enabled else "Daily digest is DISABLED."
+        msg += "\n\nUse <code>/digest on</code> or <code>/digest off</code>"
+        await update.message.reply_text(msg, parse_mode="HTML")
+        return
+
+    cmd = context.args[0].lower()
+    settings = load_digest_settings()
+
+    if cmd in ("on", "enable"):
+        settings[chat_id] = {"enabled": True, "hour": 9}  # 9 AM UTC
+        save_digest_settings(settings)
+        await update.message.reply_text("Daily digest ENABLED. You'll receive top opportunities at 9 AM UTC.")
+        return
+
+    if cmd in ("off", "disable"):
+        settings[chat_id] = {"enabled": False}
+        save_digest_settings(settings)
+        await update.message.reply_text("Daily digest DISABLED.")
+        return
+
+    await update.message.reply_text("Usage: /digest on|off")
+
+
 async def watch_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Enable scheduled cross-arb watch for this chat."""
     if context.job_queue is None:
@@ -1120,11 +1002,7 @@ def main() -> None:
     application.add_handler(CommandHandler("price", price_command))
     application.add_handler(CommandHandler("polyarb", polyarb_command))
     application.add_handler(CommandHandler("xarb", xarb_command))
-    # Legacy commands (aliases to discover)
-    application.add_handler(CommandHandler("polyml", discover_command))
-    application.add_handler(CommandHandler("trending", discover_command))
-    application.add_handler(CommandHandler("clusters", discover_command))
-    application.add_handler(CommandHandler("social", discover_command))
+    # Legacy commands removed - only /discover now
     application.add_handler(CommandHandler("watch_add", watch_add_command))
     application.add_handler(CommandHandler("watch_rm", watch_rm_command))
     application.add_handler(CommandHandler("watch", watch_command))
@@ -1136,6 +1014,8 @@ def main() -> None:
     application.add_handler(CommandHandler("label_unknown", lambda u, c: label_short(u, c, "unknown")))
     application.add_handler(CommandHandler("crossarb", crossarb_command))
     application.add_handler(CommandHandler("alerts", alerts_command))
+    application.add_handler(CommandHandler("alert", alert_command))
+    application.add_handler(CommandHandler("digest", digest_command))
     application.add_handler(CommandHandler("watch_on", watch_on_command))
     application.add_handler(CommandHandler("watch_off", watch_off_command))
     application.add_handler(CommandHandler("status", status_command))
@@ -1280,6 +1160,117 @@ def main() -> None:
                 return
 
         jq.run_repeating(_xarb_job, interval=xarb_interval, first=15)
+
+        # Price alert checking job (every 5 minutes)
+        async def _price_alert_job(context: ContextTypes.DEFAULT_TYPE):
+            try:
+                from src.engines.market_search import search_markets
+                alerts = load_price_alerts()
+                if not alerts:
+                    return
+
+                triggered = []
+                for chat_id, user_alerts in list(alerts.items()):
+                    remaining = []
+                    for a in user_alerts:
+                        query = a.get("query", "")
+                        target = a.get("target_price", 0.5)
+                        try:
+                            results = search_markets(query, limit=1)
+                            if results:
+                                market = results[0]
+                                yes_price = market.get("yes_price", 0.5)
+                                question = market.get("question", "")[:80]
+
+                                # Check if price crossed target
+                                if yes_price >= target:
+                                    triggered.append((chat_id, query, target, yes_price, question))
+                                else:
+                                    remaining.append(a)
+                            else:
+                                remaining.append(a)
+                        except Exception:
+                            remaining.append(a)
+
+                    alerts[chat_id] = remaining
+
+                # Send triggered alerts
+                for chat_id, query, target, current, question in triggered:
+                    try:
+                        msg = (
+                            f"<b>PRICE ALERT TRIGGERED</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                            f"<b>{query}</b>\n"
+                            f"Target: ${target:.2f}\n"
+                            f"Current: ${current:.2f}\n\n"
+                            f"<i>{question}...</i>"
+                        )
+                        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
+                    except Exception:
+                        pass
+
+                save_price_alerts(alerts)
+            except Exception:
+                return
+
+        jq.run_repeating(_price_alert_job, interval=300, first=60)
+
+        # Daily digest job (runs every hour, checks if it's digest time)
+        async def _daily_digest_job(context: ContextTypes.DEFAULT_TYPE):
+            try:
+                from datetime import datetime, timezone
+                now = datetime.now(timezone.utc)
+                current_hour = now.hour
+
+                settings = load_digest_settings()
+                for chat_id, user_settings in settings.items():
+                    if not user_settings.get("enabled"):
+                        continue
+                    digest_hour = user_settings.get("hour", 9)
+                    if current_hour != digest_hour:
+                        continue
+
+                    # Check if already sent today
+                    last_sent = user_settings.get("last_sent", "")
+                    today = now.strftime("%Y-%m-%d")
+                    if last_sent == today:
+                        continue
+
+                    # Send digest
+                    try:
+                        results = scan_best_opportunities(limit=50, top_n=5, min_confidence=50)
+                        if not results:
+                            continue
+
+                        lines = [
+                            "<b>DAILY DIGEST</b>",
+                            f"<i>{today}</i>",
+                            "━━━━━━━━━━━━━━━━━━━━"
+                        ]
+                        for i, r in enumerate(results, 1):
+                            q = r.get("question", "")[:60]
+                            conf = r.get("confidence", 0)
+                            action = r.get("action", "WATCH")
+                            yes = r.get("yes_price", 0)
+                            lines.append(f"\n#{i} [{action}] {conf:.0f}/100")
+                            lines.append(f"{q}...")
+                            lines.append(f"YES ${yes:.2f}")
+
+                        lines.append("\n━━━━━━━━━━━━━━━━━━━━")
+                        lines.append("<i>Use /discover for full details</i>")
+
+                        await context.bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode="HTML")
+
+                        # Mark as sent
+                        settings[chat_id]["last_sent"] = today
+                        save_digest_settings(settings)
+                    except Exception:
+                        pass
+            except Exception:
+                return
+
+        jq.run_repeating(_daily_digest_job, interval=3600, first=120)
+
     elif alert_chat and application.job_queue is None:
         logger.warning("TELEGRAM_ALERT_CHAT_ID set but JobQueue unavailable; alerts/watch scheduling disabled. Install python-telegram-bot[job-queue] or enable job queue.")
 
