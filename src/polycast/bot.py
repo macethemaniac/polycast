@@ -332,42 +332,75 @@ async def polyarb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def polyml_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     processing_msg = await update.message.reply_text(
-        "Ranking Polymarket opportunities...",
+        "Analyzing market opportunities...",
         parse_mode="HTML",
     )
     try:
-        results = scan_polymarket_ml(limit=200, top_n=5)
+        results = scan_polymarket_ml(limit=20, top_n=5)
         if not results:
-            await processing_msg.edit_text("No high-quality opportunities right now.", parse_mode="HTML")
+            await processing_msg.edit_text("No opportunities found at this time.", parse_mode="HTML")
             return
 
         def _esc(text: str) -> str:
             return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-        out_lines = ["<b>Polymarket Opportunities (ML)</b>\n"]
-        for r in results:
+        out_lines = [
+            "<b>POLYMARKET OPPORTUNITIES</b>",
+            "<i>ML-Ranked by Expected Value</i>",
+            "━━━━━━━━━━━━━━━━━━━━━━"
+        ]
+
+        for i, r in enumerate(results, 1):
             q = _esc(r.get("question", ""))
-            if len(q) > 120:
-                q = q[:120] + "..."
+            if len(q) > 100:
+                q = q[:100] + "..."
             yes = r.get("yes_price", 0.0)
             no = r.get("no_price", 0.0)
             vol = r.get("volume", 0.0)
-            news = r.get("news_mentions", 0)
-            sent = r.get("sentiment", 0.0)
             ev = r.get("ev", 0.0)
             score = r.get("opportunity_score", 0.0)
-            out_lines.append(
-                f"{q}\n"
-                f"YES: {yes:.3f}  NO: {no:.3f}  Vol: {vol:.0f}  News: {news}  Sent: {sent:.2f}\n"
-                f"EV: {ev:.3f}  Score: {score:.1f}\n"
-            )
-        sent = await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
+            sent_val = r.get("sentiment", 0.0)
+
+            # Determine signal based on EV and prices
+            if ev > 0 and yes < 0.5:
+                signal = "BUY YES"
+                signal_icon = "[+]"
+            elif ev > 0 and yes >= 0.5:
+                signal = "BUY NO"
+                signal_icon = "[-]"
+            elif yes < 0.3:
+                signal = "BUY YES"
+                signal_icon = "[+]"
+            elif no < 0.3:
+                signal = "BUY NO"
+                signal_icon = "[-]"
+            else:
+                signal = "HOLD"
+                signal_icon = "[=]"
+
+            # Format volume
+            if vol >= 1_000_000:
+                vol_str = f"${vol/1_000_000:.1f}M"
+            elif vol >= 1_000:
+                vol_str = f"${vol/1_000:.0f}K"
+            else:
+                vol_str = f"${vol:.0f}"
+
+            out_lines.append(f"\n<b>#{i} {signal_icon} {signal}</b>")
+            out_lines.append(f"<b>Q:</b> {q}")
+            out_lines.append(f"<b>Prices:</b> YES ${yes:.2f} | NO ${no:.2f}")
+            out_lines.append(f"<b>Volume:</b> {vol_str} | <b>EV:</b> {ev:+.3f} | <b>Score:</b> {score:.0f}")
+
+        out_lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+        out_lines.append("<i>Positive EV = favorable odds</i>")
+
+        sent_msg = await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
         try:
             enriched = log_opportunities("polyml", results)
             if enriched:
                 short_ids = [it.get("short_id") for it in enriched if it.get("short_id")]
                 if short_ids:
-                    await sent.reply_text(f"IDs: {', '.join(short_ids)}", parse_mode="HTML")
+                    await sent_msg.reply_text(f"Ref IDs: {', '.join(short_ids)}", parse_mode="HTML")
         except Exception:
             pass
     except Exception as exc:
@@ -377,41 +410,78 @@ async def polyml_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     processing_msg = await update.message.reply_text(
-        "Finding trending Polymarket markets...",
+        "Scanning trending markets...",
         parse_mode="HTML",
     )
     try:
-        results = scan_polymarket_trending(limit=200, top_n=5)
+        results = scan_polymarket_trending(limit=50, top_n=5)
         if not results:
-            await processing_msg.edit_text("No high-quality opportunities right now.", parse_mode="HTML")
+            await processing_msg.edit_text("No trending markets found at this time.", parse_mode="HTML")
             return
 
         def _esc(text: str) -> str:
             return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-        out_lines = ["<b>Trending Polymarket Markets</b>\n"]
-        for r in results:
+        out_lines = [
+            "<b>TRENDING MARKETS</b>",
+            "<i>High Activity &amp; Volume Spikes</i>",
+            "━━━━━━━━━━━━━━━━━━━━━━"
+        ]
+
+        for i, r in enumerate(results, 1):
             q = _esc(r.get("question", ""))
-            if len(q) > 120:
-                q = q[:120] + "..."
+            if len(q) > 100:
+                q = q[:100] + "..."
             yes = r.get("yes_price", 0.0)
             no = r.get("no_price", 0.0)
             vol = r.get("volume", 0.0)
-            news = r.get("news_mentions", 0)
             score = r.get("trend_score", 0.0)
             reasons = r.get("reasons", [])
-            reason_txt = ", ".join(reasons) if reasons else "signal"
-            out_lines.append(
-                f"{q}\n"
-                f"YES: {yes:.3f}  NO: {no:.3f}  Vol: {vol:.0f}  News: {news}  Trend: {score:.1f} ({reason_txt})\n"
-            )
-        sent = await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
+
+            # Determine signal based on price movement
+            if yes < 0.3:
+                signal = "BUY YES"
+                signal_icon = "[+]"
+            elif no < 0.3:
+                signal = "BUY NO"
+                signal_icon = "[-]"
+            elif yes > 0.7:
+                signal = "SELL YES"
+                signal_icon = "[!]"
+            elif no > 0.7:
+                signal = "SELL NO"
+                signal_icon = "[!]"
+            else:
+                signal = "WATCH"
+                signal_icon = "[~]"
+
+            # Format volume
+            if vol >= 1_000_000:
+                vol_str = f"${vol/1_000_000:.1f}M"
+            elif vol >= 1_000:
+                vol_str = f"${vol/1_000:.0f}K"
+            else:
+                vol_str = f"${vol:.0f}"
+
+            # Format reasons
+            reason_tags = " ".join([f"#{r}" for r in reasons[:2]]) if reasons else "#trending"
+
+            out_lines.append(f"\n<b>#{i} {signal_icon} {signal}</b>")
+            out_lines.append(f"<b>Q:</b> {q}")
+            out_lines.append(f"<b>Prices:</b> YES ${yes:.2f} | NO ${no:.2f}")
+            out_lines.append(f"<b>Volume:</b> {vol_str} | <b>Trend:</b> {score:.0f}/100")
+            out_lines.append(f"<i>{reason_tags}</i>")
+
+        out_lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+        out_lines.append("<i>High trend = rapid price/volume change</i>")
+
+        sent_msg = await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
         try:
             enriched = log_opportunities("trending", results)
             if enriched:
                 short_ids = [it.get("short_id") for it in enriched if it.get("short_id")]
                 if short_ids:
-                    await sent.reply_text(f"IDs: {', '.join(short_ids)}", parse_mode="HTML")
+                    await sent_msg.reply_text(f"Ref IDs: {', '.join(short_ids)}", parse_mode="HTML")
         except Exception:
             pass
     except Exception as exc:
@@ -421,35 +491,72 @@ async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def clusters_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     processing_msg = await update.message.reply_text(
-        "Clustering Polymarket markets...",
+        "Analyzing related markets...",
         parse_mode="HTML",
     )
     try:
-        clusters = scan_polymarket_clusters(limit=200, top_k_clusters=5)
+        clusters = scan_polymarket_clusters(limit=50, top_k_clusters=5)
         if not clusters:
-            await processing_msg.edit_text("No clusters available right now.", parse_mode="HTML")
+            await processing_msg.edit_text("No market clusters found at this time.", parse_mode="HTML")
             return
 
         def _esc(text: str) -> str:
             return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-        out_lines = ["<b>Polymarket Clusters</b>\n"]
-        for cl in clusters:
+        out_lines = [
+            "<b>RELATED MARKET CLUSTERS</b>",
+            "<i>Similar Markets Grouped Together</i>",
+            "━━━━━━━━━━━━━━━━━━━━━━"
+        ]
+
+        for i, cl in enumerate(clusters, 1):
             rep = _esc(cl.get("representative_question", ""))
-            if len(rep) > 120:
-                rep = rep[:120] + "..."
+            if len(rep) > 90:
+                rep = rep[:90] + "..."
             vol = cl.get("cluster_volume_sum", 0.0)
-            out_lines.append(f"• {rep}\n  Total Vol: {vol:.0f}")
+
+            # Format volume
+            if vol >= 1_000_000:
+                vol_str = f"${vol/1_000_000:.1f}M"
+            elif vol >= 1_000:
+                vol_str = f"${vol/1_000:.0f}K"
+            else:
+                vol_str = f"${vol:.0f}"
+
+            out_lines.append(f"\n<b>CLUSTER #{i}</b> | Total Vol: {vol_str}")
+            out_lines.append(f"<b>Topic:</b> {rep}")
+
             markets = cl.get("markets", [])[:3]
-            for m in markets:
+            for j, m in enumerate(markets, 1):
                 mq = _esc(m.get("question", ""))
-                if len(mq) > 80:
-                    mq = mq[:80] + "..."
+                if len(mq) > 70:
+                    mq = mq[:70] + "..."
                 yes = m.get("yes_price", 0.0)
                 no = m.get("no_price", 0.0)
                 mv = m.get("volume", 0.0)
-                out_lines.append(f"  - {mq}\n    YES: {yes:.3f}  NO: {no:.3f}  Vol: {mv:.0f}")
-            out_lines.append("")
+
+                # Determine signal
+                if yes < 0.3:
+                    signal = "BUY YES"
+                elif no < 0.3:
+                    signal = "BUY NO"
+                else:
+                    signal = "WATCH"
+
+                # Format market volume
+                if mv >= 1_000_000:
+                    mv_str = f"${mv/1_000_000:.1f}M"
+                elif mv >= 1_000:
+                    mv_str = f"${mv/1_000:.0f}K"
+                else:
+                    mv_str = f"${mv:.0f}"
+
+                out_lines.append(f"  {j}. [{signal}] YES ${yes:.2f} | NO ${no:.2f} | {mv_str}")
+                out_lines.append(f"     {mq}")
+
+        out_lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+        out_lines.append("<i>Compare prices across related markets</i>")
+
         await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
     except Exception as exc:
         await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")

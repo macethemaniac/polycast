@@ -99,21 +99,28 @@ def scan_polymarket_ml(limit: int = 200, top_n: int = 5) -> List[Dict]:
     Rank Polymarket markets using the ML-inspired opportunity ranker.
     Returns top_n entries sorted by opportunity_score.
     """
+    import logging
+    logger = logging.getLogger(__name__)
     try:
         data = fetch_polymarket_markets(limit=limit)
+        logger.info(f"scan_polymarket_ml: fetched data type={type(data)}, len={len(data) if isinstance(data, list) else 'N/A'}")
         markets = data.get("markets") if isinstance(data, dict) else None
         if markets is None and isinstance(data, list):
             markets = data
         if not markets:
+            logger.warning("scan_polymarket_ml: no markets found")
             return []
         normalized = []
         for m in markets:
             norm = normalize_polymarket_market(m)
             if norm:
                 normalized.append(norm)
+        logger.info(f"scan_polymarket_ml: normalized {len(normalized)} markets")
         ranked = rank_polymarket_opportunities(normalized)
+        logger.info(f"scan_polymarket_ml: ranked {len(ranked)} markets")
         return ranked[:top_n]
-    except Exception:
+    except Exception as e:
+        logger.error(f"scan_polymarket_ml error: {e}", exc_info=True)
         return []
 
 
@@ -121,29 +128,41 @@ def scan_polymarket_trending(limit: int = 200, top_n: int = 5) -> List[Dict]:
     """
     Return top trending Polymarket markets based on anomaly scoring.
     """
+    import logging
+    logger = logging.getLogger(__name__)
     try:
-        return get_trending_polymarket(limit=limit, top_n=top_n)
-    except Exception:
+        results = get_trending_polymarket(limit=limit, top_n=top_n)
+        logger.info(f"scan_polymarket_trending: got {len(results)} results")
+        return results
+    except Exception as e:
+        logger.error(f"scan_polymarket_trending error: {e}", exc_info=True)
         return []
 
 
 def scan_polymarket_clusters(limit: int = 200, top_k_clusters: int = 5) -> List[Dict]:
     """Return top clusters of Polymarket markets by semantic similarity."""
+    import logging
+    logger = logging.getLogger(__name__)
     try:
         data = fetch_polymarket_markets(limit=limit)
+        logger.info(f"scan_polymarket_clusters: fetched data type={type(data)}")
         markets = data.get("markets") if isinstance(data, dict) else None
         if markets is None and isinstance(data, list):
             markets = data
         if not markets:
+            logger.warning("scan_polymarket_clusters: no markets found")
             return []
         normalized = []
         for m in markets:
             norm = normalize_polymarket_market(m)
             if norm:
                 normalized.append(norm)
+        logger.info(f"scan_polymarket_clusters: normalized {len(normalized)} markets")
         clusters = cluster_markets(normalized, max_markets=limit)
+        logger.info(f"scan_polymarket_clusters: got {len(clusters)} clusters")
         return clusters[:top_k_clusters]
-    except Exception:
+    except Exception as e:
+        logger.error(f"scan_polymarket_clusters error: {e}", exc_info=True)
         return []
 
 
