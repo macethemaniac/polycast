@@ -5,6 +5,9 @@ Provides Telegram commands to scan spot exchanges via CCXT and check
 Polymarket/Kalshi arbitrage, with optional scheduled watch and deduped alerts.
 """
 
+from dotenv import load_dotenv
+load_dotenv()  # Load environment variables from .env file
+
 import argparse
 import asyncio
 import json
