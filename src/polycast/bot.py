@@ -32,7 +32,11 @@ from polycast.scanner import (
     scan_polymarket_trending,
     scan_polymarket_clusters,
     scan_cross_market_mismatches,
+    scan_social_trending,
+    scan_best_opportunities,
+    scan_market_details,
 )
+from src.engines.market_search import format_market_analysis
 from src.engines.watchlist import (
     add_to_watchlist,
     remove_from_watchlist,
@@ -171,17 +175,16 @@ def format_arbitrage_message(pair: str, prices: Dict[str, float], arbitrage_resu
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     welcome_message = (
-        "<b>Welcome to Arbitrage Scanner Bot!</b>\n\n"
-        "I can help you discover arbitrage opportunities and fetch market prices.\n\n"
-        "<b>Quick Commands</b>\n"
-        "- /scan [pair] - Scan a pair (default BTC/USDT) via CCXT\n"
-        "- /price &lt;pair&gt; - Get prices for any pair via CCXT\n"
-        "- /polyarb - Check Polymarket for YES/NO arbitrage\n"
-        "- /polyml - Rank Polymarket markets with news/sentiment signal\n"
-        "- /trending - Show trending Polymarket markets\n"
-        "- /clusters - Group similar Polymarket markets\n"
-        "- /xarb - Cross-market mismatches (Polymarket vs Kalshi)\n"
-        "- /crossarb [min_similarity] - Cross-market scan (Polymarket &lt;-&gt; Kalshi)\n"
+        "<b>Welcome to PolyCAS Trading Assistant!</b>\n\n"
+        "Find high-confidence prediction market opportunities.\n\n"
+        "<b>Main Commands</b>\n"
+        "- /discover - Find best opportunities (unified scoring)\n"
+        "- /market &lt;query&gt; - Deep-dive into any market\n"
+        "- /alerts - Manage automated notifications\n\n"
+        "<b>Quick Scans</b>\n"
+        "- /scan [pair] - Spot crypto arbitrage\n"
+        "- /polyarb - Polymarket YES/NO mispricing\n"
+        "- /xarb - Cross-market mismatches\n\n"
         "- /help - Full help and examples"
     )
     await update.message.reply_text(welcome_message, parse_mode="HTML")
@@ -189,24 +192,128 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_message = (
-        "<b>Help - Arbitrage Scanner Bot</b>\n\n"
-        "Use these commands to query prices and find arbitrage:\n\n"
-        "- <code>/start</code> - Show the welcome message\n"
-        "- <code>/scan [pair]</code> - Scan a pair (default BTC/USDT) via CCXT\n"
-        "- <code>/price &lt;pair&gt;</code> - Get prices for any <code>BASE/QUOTE</code>\n"
-        "- <code>/polyarb</code> - Detect internal Polymarket binary arbitrage\n"
-        "- <code>/polyml</code> - Rank Polymarket markets with news/sentiment signal\n"
-        "- <code>/trending</code> - Show trending Polymarket markets (news/price/volume)\n"
-        "- <code>/clusters</code> - Group similar Polymarket markets\n"
-        "- <code>/xarb</code> - Cross-market mismatches (Polymarket vs Kalshi)\n"
-        "- <code>/crossarb [min_similarity]</code> - Cross-market scan between Polymarket and Kalshi. Optional similarity (0-1).\n\n"
-        "Examples:\n"
-        "<code>/scan</code>\n"
-        "<code>/scan ETH/USDC</code>\n"
-        "<code>/price BTC/USDT</code>\n"
-        "<code>/crossarb 0.25</code> - run cross-arb with similarity 0.25"
+        "<b>Help - PolyCAS Trading Assistant</b>\n\n"
+        "<b>Main Commands</b>\n"
+        "- <code>/discover</code> - Find best opportunities with unified confidence scoring\n"
+        "- <code>/market &lt;query&gt;</code> - Deep-dive into any market\n"
+        "- <code>/alerts</code> - Manage alerts (on/off/settings)\n\n"
+        "<b>Quick Scans</b>\n"
+        "- <code>/scan [pair]</code> - Spot crypto arbitrage (CCXT)\n"
+        "- <code>/polyarb</code> - Polymarket YES/NO mispricing\n"
+        "- <code>/xarb</code> - Cross-market mismatches\n\n"
+        "<b>Legacy Commands</b> (aliases)\n"
+        "- <code>/polyml</code>, <code>/trending</code>, <code>/social</code> - All run /discover\n\n"
+        "<b>Examples</b>\n"
+        "<code>/discover</code> - Find top opportunities\n"
+        "<code>/market bitcoin</code> - Analyze Bitcoin markets\n"
+        "<code>/market trump election</code> - Search Trump election markets\n"
+        "<code>/alerts on</code> - Enable smart alerts"
     )
     await update.message.reply_text(help_message, parse_mode="HTML")
+
+
+async def discover_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Find best opportunities using unified confidence scoring."""
+    processing_msg = await update.message.reply_text(
+        "Scanning for best opportunities...",
+        parse_mode="HTML",
+    )
+    try:
+        results = scan_best_opportunities(limit=50, top_n=5, min_confidence=40)
+        if not results:
+            await processing_msg.edit_text(
+                "No high-confidence opportunities found right now.\n"
+                "<i>Try again later or lower your standards.</i>",
+                parse_mode="HTML"
+            )
+            return
+
+        def _esc(text: str) -> str:
+            return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        out_lines = [
+            "<b>BEST OPPORTUNITIES</b>",
+            "<i>Unified Confidence Scoring</i>",
+            "━━━━━━━━━━━━━━━━━━━━━━"
+        ]
+
+        for i, r in enumerate(results, 1):
+            q = _esc(r.get("question", ""))
+            if len(q) > 100:
+                q = q[:100] + "..."
+            yes = r.get("yes_price", 0.0)
+            no = r.get("no_price", 0.0)
+            vol = r.get("volume", 0.0)
+            confidence = r.get("confidence", 0.0)
+            action = r.get("action", "WATCH")
+            action_icon = r.get("action_icon", "[~]")
+            signals = r.get("signals", [])
+
+            # Format volume
+            if vol >= 1_000_000:
+                vol_str = f"${vol/1_000_000:.1f}M"
+            elif vol >= 1_000:
+                vol_str = f"${vol/1_000:.0f}K"
+            else:
+                vol_str = f"${vol:.0f}"
+
+            # Confidence label
+            if confidence >= 80:
+                conf_label = "STRONG"
+            elif confidence >= 60:
+                conf_label = "GOOD"
+            else:
+                conf_label = ""
+
+            # Format signals
+            signal_text = ", ".join([s.get("name", "")[:30] for s in signals[:2]]) if signals else ""
+
+            out_lines.append(f"\n<b>#{i} {action_icon} {conf_label} {action}</b> ({confidence:.0f}/100)")
+            out_lines.append(f"<b>Q:</b> {q}")
+            out_lines.append(f"YES ${yes:.2f} | NO ${no:.2f} | Vol: {vol_str}")
+            if signal_text:
+                out_lines.append(f"<i>Signals: {signal_text}</i>")
+
+        out_lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+        out_lines.append("<i>Use /market &lt;keyword&gt; for details</i>")
+
+        await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
+    except Exception as exc:
+        await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")
+        logger.error("Error in discover_command: %s", exc, exc_info=True)
+
+
+async def market_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Deep-dive into a specific market by keyword search."""
+    if not context.args:
+        await update.message.reply_text(
+            "Please provide a search term.\n\n"
+            "<b>Example:</b>\n"
+            "<code>/market bitcoin</code>\n"
+            "<code>/market trump election</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    query = " ".join(context.args)
+    processing_msg = await update.message.reply_text(
+        f"Searching markets for '{query}'...",
+        parse_mode="HTML",
+    )
+
+    try:
+        details, error = scan_market_details(query)
+        if error:
+            await processing_msg.edit_text(f"<b>Error:</b> {error}", parse_mode="HTML")
+            return
+
+        # Format the analysis
+        analysis_text = format_market_analysis(details)
+        await processing_msg.edit_text(analysis_text, parse_mode="HTML")
+
+    except Exception as exc:
+        await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")
+        logger.error("Error in market_command: %s", exc, exc_info=True)
 
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -566,6 +673,88 @@ async def clusters_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         logger.error("Error in clusters_command: %s", exc, exc_info=True)
 
 
+async def social_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show markets matching current social media trends (Twitter/Google Trends)."""
+    processing_msg = await update.message.reply_text(
+        "Scanning social trends (Twitter/Google)...",
+        parse_mode="HTML",
+    )
+    try:
+        results = scan_social_trending(limit=100, top_n=5)
+        if not results:
+            await processing_msg.edit_text(
+                "No markets matching social trends found right now.\n"
+                "<i>Try again later when trending topics align with prediction markets.</i>",
+                parse_mode="HTML"
+            )
+            return
+
+        def _esc(text: str) -> str:
+            return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        out_lines = [
+            "<b>SOCIAL TRENDING MARKETS</b>",
+            "<i>Markets matching Twitter/Google Trends</i>",
+            "━━━━━━━━━━━━━━━━━━━━━━"
+        ]
+
+        for i, r in enumerate(results, 1):
+            q = _esc(r.get("question", ""))
+            if len(q) > 100:
+                q = q[:100] + "..."
+            yes = r.get("yes_price", 0.0)
+            no = r.get("no_price", 0.0)
+            vol = r.get("volume", 0.0)
+            boost = r.get("social_boost", 0.0)
+            matches = r.get("trend_matches", [])
+
+            # Determine signal based on prices
+            if yes < 0.3:
+                signal = "BUY YES"
+                signal_icon = "[+]"
+            elif no < 0.3:
+                signal = "BUY NO"
+                signal_icon = "[-]"
+            elif yes > 0.7:
+                signal = "SELL YES"
+                signal_icon = "[!]"
+            elif no > 0.7:
+                signal = "SELL NO"
+                signal_icon = "[!]"
+            else:
+                signal = "WATCH"
+                signal_icon = "[~]"
+
+            # Format volume
+            if vol >= 1_000_000:
+                vol_str = f"${vol/1_000_000:.1f}M"
+            elif vol >= 1_000:
+                vol_str = f"${vol/1_000:.0f}K"
+            else:
+                vol_str = f"${vol:.0f}"
+
+            # Format trend matches
+            if matches:
+                topics = ", ".join([_esc(m.get("topic", ""))[:20] for m in matches[:2]])
+                source = matches[0].get("source", "social") if matches else "social"
+            else:
+                topics = "trending"
+                source = "social"
+
+            out_lines.append(f"\n<b>#{i} {signal_icon} {signal}</b> | Social: {boost:.0f}/100")
+            out_lines.append(f"<b>Q:</b> {q}")
+            out_lines.append(f"<b>Prices:</b> YES ${yes:.2f} | NO ${no:.2f} | Vol: {vol_str}")
+            out_lines.append(f"<i>Trends ({source}): {topics}</i>")
+
+        out_lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+        out_lines.append("<i>Higher social boost = stronger trend match</i>")
+
+        await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
+    except Exception as exc:
+        await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")
+        logger.error("Error in social_command: %s", exc, exc_info=True)
+
+
 async def xarb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     processing_msg = await update.message.reply_text(
         "Scanning cross-market mismatches (Polymarket vs Kalshi)...",
@@ -923,13 +1112,19 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
+    # Main commands
+    application.add_handler(CommandHandler("discover", discover_command))
+    application.add_handler(CommandHandler("market", market_command))
+    # Quick scans
     application.add_handler(CommandHandler("scan", scan_command))
     application.add_handler(CommandHandler("price", price_command))
     application.add_handler(CommandHandler("polyarb", polyarb_command))
-    application.add_handler(CommandHandler("polyml", polyml_command))
-    application.add_handler(CommandHandler("trending", trending_command))
-    application.add_handler(CommandHandler("clusters", clusters_command))
     application.add_handler(CommandHandler("xarb", xarb_command))
+    # Legacy commands (aliases to discover)
+    application.add_handler(CommandHandler("polyml", discover_command))
+    application.add_handler(CommandHandler("trending", discover_command))
+    application.add_handler(CommandHandler("clusters", discover_command))
+    application.add_handler(CommandHandler("social", discover_command))
     application.add_handler(CommandHandler("watch_add", watch_add_command))
     application.add_handler(CommandHandler("watch_rm", watch_rm_command))
     application.add_handler(CommandHandler("watch", watch_command))

@@ -1,17 +1,19 @@
 """MVP opportunity ranking for Polymarket markets.
 
-Uses simple heuristics combining price-implied probability, news signal, and sentiment.
+Uses simple heuristics combining price-implied probability, news signal, sentiment,
+and social trend signals (Twitter/Google Trends).
 """
 from __future__ import annotations
 
 import math
+import os
 from typing import Dict, List
 
 from data.news_gdelt import get_news_signal
 from ml.sentiment import score_texts
 from ml.feature_builder import build_features
 from ml.model_inference import predict_proba
-import os
+from src.engines.social_matcher import match_trends_to_markets
 
 
 def _clip(val: float, lo: float, hi: float) -> float:
@@ -24,10 +26,22 @@ def rank_polymarket_opportunities(markets: List[Dict]) -> List[Dict]:
     Each input market should come from normalize_polymarket_market and include:
       - question, market_id, yes_price, no_price, volume
     Returns a list sorted by opportunity_score descending.
+
+    Includes social trend signals from Twitter/Google Trends for boosting
+    markets that match current trending topics.
     """
     out: List[Dict] = []
     if not markets:
         return out
+
+    # Enrich markets with social trend matches
+    try:
+        markets = match_trends_to_markets(markets)
+    except Exception:
+        # Graceful fallback if social matching fails
+        for m in markets:
+            m["trend_matches"] = []
+            m["social_boost"] = 0.0
 
     for m in markets:
         try:
@@ -49,11 +63,16 @@ def rank_polymarket_opportunities(markets: List[Dict]) -> List[Dict]:
             stake = 1.0
             ev = p_win * (payout_mult - 1.0) - (1.0 - p_win) * stake
 
+            # Get social boost from trend matching
+            social_boost = float(m.get("social_boost", 0.0) or 0.0)
+            trend_matches = m.get("trend_matches", [])
+
             opp_score = (
                 ev * 50.0  # scale EV
                 + math.log1p(vol)
                 + math.log1p(news_mentions + 1)
                 + abs(sentiment) * 10.0
+                + social_boost * 0.5  # Social trend boost
             )
 
             # optional supervised model
@@ -85,6 +104,8 @@ def rank_polymarket_opportunities(markets: List[Dict]) -> List[Dict]:
                 "ev": ev,
                 "opportunity_score": opp_score,
                 "model_score": model_score,
+                "social_boost": social_boost,
+                "trend_matches": trend_matches,
                 "opportunity_id": "",
             })
         except Exception:

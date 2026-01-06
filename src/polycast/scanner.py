@@ -15,6 +15,10 @@ from src.engines.trend_engine import get_trending_polymarket
 from src.ml.market_clustering import cluster_markets
 from src.engines.cross_market_matcher import match_markets_by_embedding
 from src.engines.cross_arbitrage import detect_mismatches
+from src.engines.market_filter import filter_markets_by_freshness
+from src.engines.social_matcher import match_trends_to_markets, get_markets_by_social_relevance
+from src.engines.unified_scorer import score_markets, format_signals_text
+from src.engines.market_search import search_markets, get_market_details
 
 
 def scan_arbitrage(
@@ -98,6 +102,8 @@ def scan_polymarket_ml(limit: int = 200, top_n: int = 5) -> List[Dict]:
     """
     Rank Polymarket markets using the ML-inspired opportunity ranker.
     Returns top_n entries sorted by opportunity_score.
+
+    Filters out stale/closed markets and focuses on fresh, active markets.
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -116,6 +122,16 @@ def scan_polymarket_ml(limit: int = 200, top_n: int = 5) -> List[Dict]:
             if norm:
                 normalized.append(norm)
         logger.info(f"scan_polymarket_ml: normalized {len(normalized)} markets")
+
+        # Apply freshness filter
+        normalized = filter_markets_by_freshness(
+            normalized,
+            min_days_until_close=1.0,
+            max_days_until_close=90.0,
+            min_volume=100.0,
+        )
+        logger.info(f"scan_polymarket_ml: {len(normalized)} markets after freshness filter")
+
         ranked = rank_polymarket_opportunities(normalized)
         logger.info(f"scan_polymarket_ml: ranked {len(ranked)} markets")
         return ranked[:top_n]
@@ -127,16 +143,138 @@ def scan_polymarket_ml(limit: int = 200, top_n: int = 5) -> List[Dict]:
 def scan_polymarket_trending(limit: int = 200, top_n: int = 5) -> List[Dict]:
     """
     Return top trending Polymarket markets based on anomaly scoring.
+
+    Filters out stale/closed markets and focuses on fresh, active markets.
     """
     import logging
     logger = logging.getLogger(__name__)
     try:
-        results = get_trending_polymarket(limit=limit, top_n=top_n)
+        results = get_trending_polymarket(limit=limit, top_n=top_n * 2)  # Get extra for filtering
         logger.info(f"scan_polymarket_trending: got {len(results)} results")
-        return results
+
+        # Apply freshness filter
+        results = filter_markets_by_freshness(
+            results,
+            min_days_until_close=1.0,
+            max_days_until_close=90.0,
+            min_volume=50.0,  # Lower threshold for trending
+        )
+        logger.info(f"scan_polymarket_trending: {len(results)} after freshness filter")
+
+        return results[:top_n]
     except Exception as e:
         logger.error(f"scan_polymarket_trending error: {e}", exc_info=True)
         return []
+
+
+def scan_social_trending(limit: int = 100, top_n: int = 5) -> List[Dict]:
+    """
+    Find markets matching current social media trends (Twitter/Google Trends).
+
+    Returns markets ranked by social trend relevance.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        data = fetch_polymarket_markets(limit=limit)
+        markets = data.get("markets") if isinstance(data, dict) else data
+        if not markets:
+            logger.warning("scan_social_trending: no markets found")
+            return []
+
+        normalized = []
+        for m in markets:
+            norm = normalize_polymarket_market(m)
+            if norm:
+                normalized.append(norm)
+        logger.info(f"scan_social_trending: normalized {len(normalized)} markets")
+
+        # Apply freshness filter
+        normalized = filter_markets_by_freshness(
+            normalized,
+            min_days_until_close=1.0,
+            max_days_until_close=90.0,
+            min_volume=100.0,
+        )
+        logger.info(f"scan_social_trending: {len(normalized)} after freshness filter")
+
+        # Match to social trends
+        matched = match_trends_to_markets(normalized)
+
+        # Get markets sorted by social relevance
+        results = get_markets_by_social_relevance(matched, min_boost=5.0)
+        logger.info(f"scan_social_trending: {len(results)} markets with trend matches")
+
+        return results[:top_n]
+    except Exception as e:
+        logger.error(f"scan_social_trending error: {e}", exc_info=True)
+        return []
+
+
+def scan_best_opportunities(limit: int = 100, top_n: int = 5, min_confidence: int = 40) -> List[Dict]:
+    """
+    Find best opportunities using unified scoring across all signals.
+
+    Combines: EV, social trends, news, sentiment, volume into one confidence score.
+    Returns markets sorted by confidence with clear BUY/SELL/WATCH actions.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        data = fetch_polymarket_markets(limit=limit)
+        markets = data.get("markets") if isinstance(data, dict) else data
+        if not markets:
+            logger.warning("scan_best_opportunities: no markets found")
+            return []
+
+        normalized = []
+        for m in markets:
+            norm = normalize_polymarket_market(m)
+            if norm:
+                normalized.append(norm)
+        logger.info(f"scan_best_opportunities: normalized {len(normalized)} markets")
+
+        # Apply freshness filter
+        normalized = filter_markets_by_freshness(
+            normalized,
+            min_days_until_close=1.0,
+            max_days_until_close=90.0,
+            min_volume=100.0,
+        )
+        logger.info(f"scan_best_opportunities: {len(normalized)} after freshness filter")
+
+        # Score all markets
+        scored = score_markets(normalized, min_confidence=min_confidence)
+        logger.info(f"scan_best_opportunities: {len(scored)} markets above {min_confidence} confidence")
+
+        return scored[:top_n]
+    except Exception as e:
+        logger.error(f"scan_best_opportunities error: {e}", exc_info=True)
+        return []
+
+
+def scan_market_details(query: str) -> Tuple[Optional[Dict], Optional[str]]:
+    """
+    Get detailed analysis for a specific market by keyword search.
+
+    Returns comprehensive market analysis or error message.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        # Search for markets matching the query
+        results = search_markets(query, limit=1)
+        if not results:
+            return None, f"No markets found matching '{query}'"
+
+        # Get full details for the top match
+        market = results[0]
+        details = get_market_details(market)
+
+        return details, None
+    except Exception as e:
+        logger.error(f"scan_market_details error: {e}", exc_info=True)
+        return None, str(e)
 
 
 def scan_polymarket_clusters(limit: int = 200, top_k_clusters: int = 5) -> List[Dict]:
