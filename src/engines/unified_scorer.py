@@ -141,39 +141,47 @@ def compute_social_score(social_boost: float, trend_matches: List[Dict]) -> Tupl
     return score, desc
 
 
-def determine_action(yes_price: float, no_price: float, ev: float, confidence: float) -> Tuple[str, str]:
-    """Determine recommended action based on prices and signals.
+def determine_action(yes_price: float, no_price: float, ev: float, confidence: float,
+                     sentiment: float = 0.0, social_boost: float = 0.0, news_mentions: int = 0) -> Tuple[str, str]:
+    """Determine recommended action based on signals, not just price.
 
     Returns:
         (action, action_icon)
+
+    Logic: Only recommend BUY when we have actual signals (sentiment, social, news)
+    that suggest the market price may be wrong. Don't recommend buying just because
+    a price is extreme - extreme prices often reflect legitimate market knowledge.
     """
-    # Strong signals
-    if confidence >= 80:
-        if ev > 0 and yes_price < 0.5:
-            return "STRONG BUY YES", "[++]"
-        elif ev > 0 and yes_price >= 0.5:
-            return "STRONG BUY NO", "[--]"
-        elif yes_price < 0.25:
-            return "STRONG BUY YES", "[++]"
-        elif no_price < 0.25:
-            return "STRONG BUY NO", "[--]"
+    # Calculate signal strength - do we have real reasons to be contrarian?
+    has_positive_signals = sentiment > 0.2 or social_boost > 20 or news_mentions >= 3
+    has_negative_signals = sentiment < -0.2
+    signal_strength = abs(sentiment) * 30 + min(social_boost, 30) + min(news_mentions * 3, 20)
 
-    # Moderate signals
-    if confidence >= 60:
-        if ev > 0 and yes_price < 0.5:
-            return "BUY YES", "[+]"
-        elif ev > 0 and yes_price >= 0.5:
-            return "BUY NO", "[-]"
-        elif yes_price < 0.35:
-            return "BUY YES", "[+]"
-        elif no_price < 0.35:
-            return "BUY NO", "[-]"
+    # Strong signals with actual backing
+    if confidence >= 80 and signal_strength >= 30:
+        if has_positive_signals and yes_price < 0.4:
+            return "STRONG BUY YES", "[++]"
+        elif has_negative_signals and no_price < 0.4:
+            return "STRONG BUY NO", "[--]"
+        elif has_positive_signals and yes_price >= 0.6:
+            return "STRONG BUY NO", "[--]"
+        elif has_negative_signals and no_price >= 0.6:
+            return "STRONG BUY YES", "[++]"
 
-    # Watch signals
-    if yes_price > 0.75:
-        return "SELL YES", "[!]"
-    elif no_price > 0.75:
-        return "SELL NO", "[!]"
+    # Moderate signals - need some actual signal backing
+    if confidence >= 60 and signal_strength >= 15:
+        if has_positive_signals and yes_price < 0.4:
+            return "BUY YES", "[+]"
+        elif has_negative_signals and no_price < 0.4:
+            return "BUY NO", "[-]"
+        elif has_positive_signals and yes_price >= 0.6:
+            return "BUY NO", "[-]"
+        elif has_negative_signals and no_price >= 0.6:
+            return "BUY YES", "[+]"
+
+    # Interest signals - market is moving or has activity worth watching
+    if confidence >= 50 and (social_boost > 10 or news_mentions >= 2):
+        return "MONITOR", "[*]"
 
     return "WATCH", "[~]"
 
@@ -236,18 +244,21 @@ def compute_unified_score(market: Dict) -> Dict:
     if sent_desc:
         signals.append({"name": sent_desc, "value": sentiment, "positive": sentiment > 0})
 
-    # Determine action
-    action, action_icon = determine_action(yes_price, no_price, ev, confidence)
+    # Determine action - pass actual signals so recommendation is based on real data
+    action, action_icon = determine_action(
+        yes_price, no_price, ev, confidence,
+        sentiment=sentiment, social_boost=social_boost, news_mentions=news_mentions
+    )
 
     # Build recommendation text
-    if confidence >= 80:
-        rec = f"High confidence opportunity. {action} recommended."
-    elif confidence >= 60:
-        rec = f"Good opportunity. Consider {action}."
-    elif confidence >= 40:
-        rec = "Monitor this market for better entry."
+    if action.startswith("STRONG"):
+        rec = f"Strong signals support this trade. {action} recommended."
+    elif action.startswith("BUY"):
+        rec = f"Good signals detected. Consider {action}."
+    elif action == "MONITOR":
+        rec = "Interesting activity. Monitor for clearer entry."
     else:
-        rec = "Low confidence. Wait for clearer signals."
+        rec = "No strong signals. Watch for developments."
 
     return {
         **market,  # Include all original fields
@@ -268,43 +279,55 @@ def compute_fast_score(market: Dict) -> Dict:
 
     Uses only local data: prices, volume, social boost (if already computed).
     Much faster than compute_unified_score.
+
+    NOTE: Without external signals (news, sentiment), we can only score based on
+    volume and social activity. We do NOT give bonus points for extreme prices
+    since those often reflect legitimate market consensus.
     """
     yes_price = float(market.get("yes_price", 0.0) or 0.0)
     no_price = float(market.get("no_price", 0.0) or 0.0)
     volume = float(market.get("volume", 0.0) or 0.0)
     social_boost = float(market.get("social_boost", 0.0) or 0.0)
 
-    # Simple EV estimate (no external signals)
-    if yes_price > 0:
-        # Assume slight positive bias for active markets
-        ev = (0.5 / yes_price) - 1.0 if yes_price < 0.5 else (0.5 / (1 - yes_price)) - 1.0
-        ev = _clip(ev, -0.5, 0.5)
-        ev_score = _clip((ev + 0.2) * 50, 0, 40)
-    else:
-        ev = 0.0
-        ev_score = 0.0
+    # Without external signals, we can't reliably estimate EV
+    # Just set to 0 - we need actual signals to claim positive EV
+    ev = 0.0
+    ev_score = 0.0
 
-    # Volume score (0-20)
-    if volume >= 500_000:
-        vol_score = 20.0
+    # Volume score (0-30) - high volume means active/liquid market
+    if volume >= 1_000_000:
+        vol_score = 30.0
+    elif volume >= 500_000:
+        vol_score = 25.0
     elif volume >= 100_000:
+        vol_score = 20.0
+    elif volume >= 50_000:
         vol_score = 15.0
     elif volume >= 10_000:
         vol_score = 10.0
     else:
         vol_score = 5.0
 
-    # Social score (0-20)
-    social_score = min(social_boost * 2, 20.0)
+    # Social score (0-40) - this is our main signal in fast mode
+    social_score = min(social_boost * 1.5, 40.0)
 
-    # Price edge score - favor prices away from 0.5 (0-20)
-    price_edge = abs(yes_price - 0.5)
-    edge_score = price_edge * 40  # 0-20 points
+    # Liquidity bonus - prefer markets with prices in tradeable range (0-20)
+    # Markets at extreme prices (0.01 or 0.99) are hard to profit from
+    if 0.15 <= yes_price <= 0.85:
+        liquidity_score = 20.0  # Good trading range
+    elif 0.05 <= yes_price <= 0.95:
+        liquidity_score = 10.0  # Acceptable range
+    else:
+        liquidity_score = 0.0  # Extreme prices - likely resolved or very certain
 
-    confidence = ev_score + vol_score + social_score + edge_score
+    confidence = vol_score + social_score + liquidity_score
     confidence = _clip(confidence, 0, 100)
 
-    action, action_icon = determine_action(yes_price, no_price, ev, confidence)
+    # Pass social_boost to determine_action - it's our only signal in fast mode
+    action, action_icon = determine_action(
+        yes_price, no_price, ev, confidence,
+        sentiment=0.0, social_boost=social_boost, news_mentions=0
+    )
 
     return {
         **market,
