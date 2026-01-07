@@ -277,9 +277,12 @@ def scan_best_opportunities(limit: int = 100, top_n: int = 5, min_confidence: in
                 m["change_24h"] = price_data.get("change_24h")
                 m["change_7d"] = price_data.get("change_7d")
 
-        # Add variety: shuffle within confidence tiers and ensure category diversity
+        # Add variety: shuffle within confidence tiers
         import random
-        random.seed(int(now / 60))  # Changes every minute for variety
+        import hashlib
+        # Seed changes every 30 seconds AND varies by result count for more variety
+        seed_input = f"{int(now / 30)}-{len(scored)}"
+        random.seed(int(hashlib.md5(seed_input.encode()).hexdigest()[:8], 16))
 
         # Group by confidence tier
         high_conf = [m for m in scored if m.get("confidence", 0) >= 60]
@@ -304,15 +307,14 @@ def scan_best_opportunities(limit: int = 100, top_n: int = 5, min_confidence: in
         return []
 
 
-def scan_trending_news(limit: int = 100, top_n: int = 10) -> List[Dict]:
+def scan_trending_news(limit: int = 200, top_n: int = 10) -> List[Dict]:
     """
-    Find markets matching current trending topics.
+    Find hot/trending markets based on Polymarket activity metrics.
 
-    Uses 2-phase approach for speed:
-    1. Fast: Match all markets to social trends (get social_boost)
-    2. Return markets with high social_boost (trending topics)
+    Uses actual 24h volume and price movement data from Polymarket,
+    NOT external news APIs. Fast and accurate.
 
-    Much faster than full scoring - no external API calls.
+    Trending score = volume_24h * abs(price_change_24h) * 1000
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -331,38 +333,52 @@ def scan_trending_news(limit: int = 100, top_n: int = 10) -> List[Dict]:
                 normalized.append(norm)
         logger.info(f"scan_trending_news: normalized {len(normalized)} markets")
 
-        # Apply freshness filter - focus on active markets
+        # Apply freshness filter
         normalized = filter_markets_by_freshness(
             normalized,
             min_days_until_close=1.0,
-            max_days_until_close=60.0,
-            min_volume=500.0,  # Lower threshold to find more trending markets
+            max_days_until_close=90.0,
+            min_volume=1000.0,  # Need some baseline volume
         )
         logger.info(f"scan_trending_news: {len(normalized)} after freshness filter")
 
-        # Phase 1: Match to social trends (fast - uses cached trends)
-        matched = match_trends_to_markets(normalized)
+        # Calculate trending score based on activity
+        for m in normalized:
+            vol_24h = m.get("volume_24h", 0) or 0
+            price_chg = abs(m.get("price_change_24h", 0) or 0)
 
-        # Filter to markets with trend matches
-        with_trends = [
-            m for m in matched
-            if m.get("social_boost", 0) > 5 or len(m.get("trend_matches", [])) > 0
-        ]
+            # Trending score: high volume + price movement = hot market
+            # Normalize: $10k vol with 5% move = score of 500
+            trending_score = (vol_24h / 1000) * (price_chg * 100) + (vol_24h / 10000)
+            m["trending_score"] = trending_score
 
-        if not with_trends:
-            logger.info("scan_trending_news: no markets matched trends")
-            return []
+            # Determine trend direction
+            raw_chg = m.get("price_change_24h", 0) or 0
+            if raw_chg > 0.02:
+                m["trend_direction"] = "📈 UP"
+            elif raw_chg < -0.02:
+                m["trend_direction"] = "📉 DOWN"
+            else:
+                m["trend_direction"] = "➡️ FLAT"
 
-        # Phase 2: Fast score the trending markets (no external API calls)
-        scored = score_markets(with_trends, min_confidence=20, fast_mode=True)
+        # Filter to markets with actual activity
+        active = [m for m in normalized if m.get("volume_24h", 0) > 5000]
 
-        # Sort by social_boost (strongest trend match first)
-        scored.sort(
-            key=lambda x: x.get("social_boost", 0),
-            reverse=True
-        )
+        if not active:
+            # Fallback: just return highest volume markets
+            normalized.sort(key=lambda x: x.get("volume_24h", 0), reverse=True)
+            active = normalized[:top_n]
 
-        logger.info(f"scan_trending_news: {len(scored)} markets with trend matches")
+        # Sort by trending score
+        active.sort(key=lambda x: x.get("trending_score", 0), reverse=True)
+
+        # Add confidence and action using fast scoring
+        scored = score_markets(active[:top_n * 2], min_confidence=0, fast_mode=True)
+
+        # Re-sort by trending score (scoring might have reordered)
+        scored.sort(key=lambda x: x.get("trending_score", 0), reverse=True)
+
+        logger.info(f"scan_trending_news: {len(scored)} hot markets found")
         return scored[:top_n]
 
     except Exception as e:

@@ -81,6 +81,12 @@ def normalize_polymarket_market(m: Dict) -> Dict | None:
         # Build Polymarket URL
         market_url = f"https://polymarket.com/event/{slug}" if slug else ""
 
+        # Activity/trending metrics
+        volume_24h = m.get("volume24hr") or m.get("volume24hrClob") or 0
+        price_change_24h = m.get("oneDayPriceChange") or 0
+        volume_1w = m.get("volume1wk") or m.get("volume1wkClob") or 0
+        price_change_1w = m.get("oneWeekPriceChange") or 0
+
         return {
             "market_id": market_id,
             "question": question,
@@ -96,6 +102,11 @@ def normalize_polymarket_market(m: Dict) -> Dict | None:
             "tags": tags,
             "slug": slug,
             "market_url": market_url,
+            # Activity metrics for trending
+            "volume_24h": float(volume_24h) if volume_24h else 0.0,
+            "price_change_24h": float(price_change_24h) if price_change_24h else 0.0,
+            "volume_1w": float(volume_1w) if volume_1w else 0.0,
+            "price_change_1w": float(price_change_1w) if price_change_1w else 0.0,
         }
     except Exception as exc:
         logger.debug("Failed to normalize market: %s", exc)
