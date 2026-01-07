@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def match_trends_to_markets(
     markets: List[Dict],
-    min_similarity: float = 0.25,  # Lowered from 0.35 for more matches
+    min_similarity: float = 0.30,  # Raised from 0.25 to reduce false positives
     top_k_matches: int = 3,
     region: str = "united_states",
 ) -> List[Dict]:

@@ -67,6 +67,9 @@ def _get_gdelt_trending_topics() -> List[Dict]:
             "february", "march", "april", "june", "july", "august", "september",
             "october", "november", "december", "monday", "tuesday", "wednesday",
             "thursday", "friday", "saturday", "sunday", "earnings", "results",
+            # Lottery/gambling noise (not useful for prediction markets)
+            "lottery", "mega millions", "powerball", "jackpot", "winner", "winners",
+            "winning", "ticket", "tickets", "numbers", "drawing",
         }
 
         for art in articles:
