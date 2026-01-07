@@ -263,17 +263,72 @@ def compute_unified_score(market: Dict) -> Dict:
     }
 
 
-def score_markets(markets: List[Dict], min_confidence: int = 40) -> List[Dict]:
+def compute_fast_score(market: Dict) -> Dict:
+    """Fast scoring without external API calls.
+
+    Uses only local data: prices, volume, social boost (if already computed).
+    Much faster than compute_unified_score.
+    """
+    yes_price = float(market.get("yes_price", 0.0) or 0.0)
+    no_price = float(market.get("no_price", 0.0) or 0.0)
+    volume = float(market.get("volume", 0.0) or 0.0)
+    social_boost = float(market.get("social_boost", 0.0) or 0.0)
+
+    # Simple EV estimate (no external signals)
+    if yes_price > 0:
+        # Assume slight positive bias for active markets
+        ev = (0.5 / yes_price) - 1.0 if yes_price < 0.5 else (0.5 / (1 - yes_price)) - 1.0
+        ev = _clip(ev, -0.5, 0.5)
+        ev_score = _clip((ev + 0.2) * 50, 0, 40)
+    else:
+        ev = 0.0
+        ev_score = 0.0
+
+    # Volume score (0-20)
+    if volume >= 500_000:
+        vol_score = 20.0
+    elif volume >= 100_000:
+        vol_score = 15.0
+    elif volume >= 10_000:
+        vol_score = 10.0
+    else:
+        vol_score = 5.0
+
+    # Social score (0-20)
+    social_score = min(social_boost * 2, 20.0)
+
+    # Price edge score - favor prices away from 0.5 (0-20)
+    price_edge = abs(yes_price - 0.5)
+    edge_score = price_edge * 40  # 0-20 points
+
+    confidence = ev_score + vol_score + social_score + edge_score
+    confidence = _clip(confidence, 0, 100)
+
+    action, action_icon = determine_action(yes_price, no_price, ev, confidence)
+
+    return {
+        **market,
+        "confidence": confidence,
+        "action": action,
+        "action_icon": action_icon,
+        "signals": [],
+        "recommendation": "",
+        "ev": ev,
+    }
+
+
+def score_markets(markets: List[Dict], min_confidence: int = 40, fast_mode: bool = True) -> List[Dict]:
     """Score multiple markets and filter by confidence.
 
     Args:
         markets: List of normalized market dicts
         min_confidence: Minimum confidence to include
+        fast_mode: If True, use fast scoring (no external API calls)
 
     Returns:
         List of scored markets, sorted by confidence descending
     """
-    # First enrich with social trends
+    # First enrich with social trends (cached, relatively fast)
     try:
         markets = match_trends_to_markets(markets)
     except Exception:
@@ -282,9 +337,11 @@ def score_markets(markets: List[Dict], min_confidence: int = 40) -> List[Dict]:
             m["social_boost"] = 0.0
 
     scored = []
+    score_func = compute_fast_score if fast_mode else compute_unified_score
+
     for m in markets:
         try:
-            result = compute_unified_score(m)
+            result = score_func(m)
             if result["confidence"] >= min_confidence:
                 scored.append(result)
         except Exception as e:

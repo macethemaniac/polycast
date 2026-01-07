@@ -45,14 +45,15 @@ def match_trends_to_markets(
     trends = get_trending_topics(region=region)
 
     if not trends:
-        # No trends available, return markets with empty trend data
+        # No trends available, return markets with empty trend data (FAST PATH)
         for m in markets:
             m["trend_matches"] = []
             m["social_boost"] = 0.0
-        logger.debug("match_trends_to_markets: no trends available")
+        logger.debug("match_trends_to_markets: no trends, skipping embeddings")
         return markets
 
-    # First pass: quick keyword matching
+    # First pass: quick keyword matching (FAST - no ML)
+    has_any_match = False
     for m in markets:
         m["_keyword_matches"] = []
         question = m.get("question", "")
@@ -60,8 +61,17 @@ def match_trends_to_markets(
             topic = t.get("topic", "")
             if topic_matches_text(topic, question):
                 m["_keyword_matches"].append(t)
+                has_any_match = True
 
-    # Embed market questions
+    # If no keyword matches found, skip expensive embeddings
+    if not has_any_match:
+        for m in markets:
+            m["trend_matches"] = []
+            m["social_boost"] = 0.0
+        logger.debug("match_trends_to_markets: no keyword matches, skipping embeddings")
+        return markets
+
+    # Embed market questions (only if we have keyword matches)
     market_texts = [m.get("question", "") for m in markets]
     try:
         market_embeddings = embed_texts(market_texts)

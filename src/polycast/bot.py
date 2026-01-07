@@ -291,12 +291,25 @@ async def discover_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         parse_mode="HTML",
     )
     try:
-        results = scan_best_opportunities(limit=100, top_n=20, min_confidence=40)
+        # Fetch more results when filtering by category
+        fetch_count = 100 if category and category != "all" else 20
+        results = scan_best_opportunities(limit=200, top_n=fetch_count, min_confidence=35)
+        logger.info(f"discover_command: category={category}, total_results={len(results)}")
 
         # Apply category filter
         if category and category != "all":
+            before_filter = len(results)
             results = _filter_by_category(results, category)
-            results = results[:5]  # Take top 5 after filtering
+            logger.info(f"discover_command: filtered {before_filter} -> {len(results)} for category={category}")
+            if not results:
+                # If no matches, show message instead of empty results
+                await processing_msg.edit_text(
+                    f"No markets found in <b>{category}</b> category.\n\n"
+                    f"Try: /discover (all categories)",
+                    parse_mode="HTML"
+                )
+                return
+            results = results[:5]
         else:
             results = results[:5]
         if not results:
@@ -348,19 +361,203 @@ async def discover_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             # Format signals
             signal_text = ", ".join([s.get("name", "")[:30] for s in signals[:2]]) if signals else ""
 
+            # Format price change
+            change_24h = r.get("change_24h")
+            change_str = ""
+            if change_24h is not None:
+                pct = change_24h * 100
+                if pct >= 0:
+                    change_str = f" | 24h: +{pct:.1f}%"
+                else:
+                    change_str = f" | 24h: {pct:.1f}%"
+
             out_lines.append(f"\n<b>#{i} {action_icon} {conf_label} {action}</b> ({confidence:.0f}/100)")
             out_lines.append(f"<b>Q:</b> {q}")
-            out_lines.append(f"YES ${yes:.2f} | NO ${no:.2f} | Vol: {vol_str}")
+            out_lines.append(f"YES ${yes:.2f} | NO ${no:.2f} | Vol: {vol_str}{change_str}")
             if signal_text:
                 out_lines.append(f"<i>Signals: {signal_text}</i>")
 
         out_lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
-        out_lines.append("<i>Use /market &lt;keyword&gt; for details</i>")
+        out_lines.append("<i>Tap buttons below for actions</i>")
 
-        await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
+        # Build inline keyboard with quick actions
+        keyboard = []
+        for i, r in enumerate(results, 1):
+            market_id = r.get("market_id", "")[:20]  # Truncate for callback data
+            q_short = r.get("question", "")[:20]
+            keyboard.append([
+                InlineKeyboardButton(f"#{i} Details", callback_data=f"details:{market_id}"),
+                InlineKeyboardButton(f"#{i} Alert", callback_data=f"alert:{market_id}"),
+            ])
+        keyboard.append([
+            InlineKeyboardButton("Refresh", callback_data="refresh:discover"),
+        ])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML", reply_markup=reply_markup)
     except Exception as exc:
         await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")
         logger.error("Error in discover_command: %s", exc, exc_info=True)
+
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle inline button presses from /discover and /market commands."""
+    query = update.callback_query
+    await query.answer()  # Acknowledge the callback
+
+    data = query.data
+    if not data:
+        return
+
+    try:
+        action, payload = data.split(":", 1)
+    except ValueError:
+        return
+
+    if action == "details":
+        # Show market details
+        market_id = payload
+        from src.engines.market_search import get_market_by_id, get_market_details
+
+        market = get_market_by_id(market_id)
+        if not market:
+            await query.edit_message_text(
+                f"Market not found: {market_id}\n\nTry /market &lt;keyword&gt; to search.",
+                parse_mode="HTML"
+            )
+            return
+
+        details = get_market_details(market)
+        analysis_text = format_market_analysis(details)
+
+        # Add back button
+        keyboard = [[
+            InlineKeyboardButton("Back to Discover", callback_data="refresh:discover"),
+            InlineKeyboardButton("Set Alert", callback_data=f"alert:{market_id}"),
+        ]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(analysis_text, parse_mode="HTML", reply_markup=reply_markup)
+
+    elif action == "alert":
+        # Create a price alert for the market
+        market_id = payload
+        from src.engines.market_search import get_market_by_id
+
+        market = get_market_by_id(market_id)
+        if not market:
+            await query.edit_message_text(
+                f"Market not found: {market_id}",
+                parse_mode="HTML"
+            )
+            return
+
+        question = market.get("question", "Unknown")[:50]
+        yes_price = float(market.get("yes_price", 0))
+
+        # Create alert at +10% movement
+        target_price = min(0.99, yes_price + 0.10)
+        chat_id = str(query.message.chat_id)
+
+        alerts = load_price_alerts()
+        if chat_id not in alerts:
+            alerts[chat_id] = []
+
+        alerts[chat_id].append({
+            "query": question[:30],
+            "market_id": market_id,
+            "target_price": target_price,
+            "direction": "above",
+            "baseline_price": yes_price,
+            "created": time.time(),
+        })
+        save_price_alerts(alerts)
+
+        await query.answer(f"Alert set: YES price crosses ${target_price:.2f}", show_alert=True)
+
+    elif action == "refresh":
+        # Refresh discover results
+        if payload == "discover":
+            await query.edit_message_text("Refreshing opportunities...", parse_mode="HTML")
+
+            results = scan_best_opportunities(limit=200, top_n=5, min_confidence=35, use_cache=False)
+
+            if not results:
+                await query.edit_message_text(
+                    "No high-confidence opportunities found.\n<i>Try again later.</i>",
+                    parse_mode="HTML"
+                )
+                return
+
+            def _esc(text: str) -> str:
+                return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+            out_lines = [
+                "<b>BEST OPPORTUNITIES</b>",
+                "<i>Unified Confidence Scoring</i>",
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ]
+
+            for i, r in enumerate(results, 1):
+                q = _esc(r.get("question", ""))
+                if len(q) > 100:
+                    q = q[:100] + "..."
+                yes = r.get("yes_price", 0.0)
+                no = r.get("no_price", 0.0)
+                vol = r.get("volume", 0.0)
+                confidence = r.get("confidence", 0.0)
+                action_str = r.get("action", "WATCH")
+                action_icon = r.get("action_icon", "[~]")
+                signals = r.get("signals", [])
+
+                if vol >= 1_000_000:
+                    vol_str = f"${vol/1_000_000:.1f}M"
+                elif vol >= 1_000:
+                    vol_str = f"${vol/1_000:.0f}K"
+                else:
+                    vol_str = f"${vol:.0f}"
+
+                if confidence >= 80:
+                    conf_label = "STRONG"
+                elif confidence >= 60:
+                    conf_label = "GOOD"
+                else:
+                    conf_label = ""
+
+                signal_text = ", ".join([s.get("name", "")[:30] for s in signals[:2]]) if signals else ""
+
+                # Format price change
+                change_24h = r.get("change_24h")
+                change_str = ""
+                if change_24h is not None:
+                    pct = change_24h * 100
+                    if pct >= 0:
+                        change_str = f" | 24h: +{pct:.1f}%"
+                    else:
+                        change_str = f" | 24h: {pct:.1f}%"
+
+                out_lines.append(f"\n<b>#{i} {action_icon} {conf_label} {action_str}</b> ({confidence:.0f}/100)")
+                out_lines.append(f"<b>Q:</b> {q}")
+                out_lines.append(f"YES ${yes:.2f} | NO ${no:.2f} | Vol: {vol_str}{change_str}")
+                if signal_text:
+                    out_lines.append(f"<i>Signals: {signal_text}</i>")
+
+            out_lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+            out_lines.append("<i>Tap buttons below for actions</i>")
+
+            keyboard = []
+            for i, r in enumerate(results, 1):
+                market_id = r.get("market_id", "")[:20]
+                keyboard.append([
+                    InlineKeyboardButton(f"#{i} Details", callback_data=f"details:{market_id}"),
+                    InlineKeyboardButton(f"#{i} Alert", callback_data=f"alert:{market_id}"),
+                ])
+            keyboard.append([
+                InlineKeyboardButton("Refresh", callback_data="refresh:discover"),
+            ])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await query.edit_message_text("\n".join(out_lines), parse_mode="HTML", reply_markup=reply_markup)
 
 
 async def market_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -389,7 +586,16 @@ async def market_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         # Format the analysis
         analysis_text = format_market_analysis(details)
-        await processing_msg.edit_text(analysis_text, parse_mode="HTML")
+
+        # Add inline buttons for actions
+        market_id = details.get("market_id", "")[:20]
+        keyboard = [[
+            InlineKeyboardButton("Set Alert", callback_data=f"alert:{market_id}"),
+            InlineKeyboardButton("Discover More", callback_data="refresh:discover"),
+        ]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await processing_msg.edit_text(analysis_text, parse_mode="HTML", reply_markup=reply_markup)
 
     except Exception as exc:
         await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")
@@ -1019,6 +1225,8 @@ def main() -> None:
     application.add_handler(CommandHandler("watch_on", watch_on_command))
     application.add_handler(CommandHandler("watch_off", watch_off_command))
     application.add_handler(CommandHandler("status", status_command))
+    # Inline button callback handler
+    application.add_handler(CallbackQueryHandler(button_callback))
 
     alert_chat = os.getenv("TELEGRAM_ALERT_CHAT_ID")
     if alert_chat and application.job_queue is not None:

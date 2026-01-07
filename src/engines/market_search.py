@@ -1,6 +1,7 @@
 """Market search and deep-dive analysis engine.
 
 Provides keyword search and comprehensive market analysis.
+Fast version - no external API calls or slow embeddings.
 """
 from __future__ import annotations
 
@@ -8,16 +9,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-
 from src.exchanges.polymarket import fetch_polymarket_markets, normalize_polymarket_market
-from src.ml.embeddings import embed_texts, EmbeddingStore
-from src.engines.unified_scorer import compute_unified_score
 from src.engines.market_filter import filter_markets_by_freshness, parse_close_time
-from src.ml.market_clustering import cluster_markets
-from src.data.news_gdelt import get_news_signal
-from src.ml.sentiment import score_texts
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +49,7 @@ def _get_cached_markets(limit: int = 200) -> List[Dict]:
 
 
 def search_markets(query: str, limit: int = 10) -> List[Dict]:
-    """Search markets by keyword using semantic similarity.
+    """Search markets by keyword matching (fast).
 
     Args:
         query: Search query (keyword or phrase)
@@ -78,39 +71,40 @@ def search_markets(query: str, limit: int = 10) -> List[Dict]:
     if not markets:
         return []
 
-    # Get embeddings
-    questions = [m.get("question", "") for m in markets]
-    try:
-        market_embeddings = embed_texts(questions)
-        query_embedding = embed_texts([query])
+    query_lower = query.lower().strip()
+    query_words = query_lower.split()
 
-        # Compute similarities
-        similarities = cosine_similarity(query_embedding, market_embeddings)[0]
+    # Fast keyword matching
+    results = []
+    for m in markets:
+        question = m.get("question", "").lower()
 
-        # Combine with results
-        results = []
-        for i, m in enumerate(markets):
-            sim = float(similarities[i])
-            if sim >= 0.25:  # Minimum threshold
-                m["search_similarity"] = sim
-                results.append(m)
+        # Calculate match score based on keyword presence
+        score = 0.0
+        matches = 0
 
-        # Sort by similarity
-        results.sort(key=lambda x: x.get("search_similarity", 0), reverse=True)
+        # Exact phrase match (highest score)
+        if query_lower in question:
+            score = 1.0
+            matches = len(query_words)
+        else:
+            # Individual word matches
+            for word in query_words:
+                if len(word) >= 3 and word in question:
+                    matches += 1
+                    score += 0.3
 
-        return results[:limit]
+        if matches > 0:
+            # Boost score by match ratio
+            score = min(score, 1.0) * (matches / len(query_words))
+            m_copy = m.copy()
+            m_copy["search_similarity"] = score
+            results.append(m_copy)
 
-    except Exception as e:
-        logger.error(f"Search failed: {e}")
-        # Fallback to keyword matching
-        query_lower = query.lower()
-        results = []
-        for m in markets:
-            q = m.get("question", "").lower()
-            if query_lower in q:
-                m["search_similarity"] = 0.5
-                results.append(m)
-        return results[:limit]
+    # Sort by similarity score
+    results.sort(key=lambda x: x.get("search_similarity", 0), reverse=True)
+
+    return results[:limit]
 
 
 def get_market_by_id(market_id: str) -> Optional[Dict]:
@@ -123,31 +117,34 @@ def get_market_by_id(market_id: str) -> Optional[Dict]:
 
 
 def get_market_details(market: Dict) -> Dict:
-    """Get comprehensive analysis for a market.
+    """Get analysis for a market (fast version - no external API calls).
 
     Args:
         market: Normalized market dict
 
     Returns:
-        Dict with full analysis including:
+        Dict with analysis including:
         - prices, volume, liquidity
-        - news headlines
-        - sentiment analysis
-        - social trend matches
-        - related markets
         - time to close
+        - price history (24h/7d changes)
         - recommendation
     """
+    from src.engines.unified_scorer import compute_fast_score, determine_action
+    from src.data.price_history import get_price_change
+
     question = market.get("question", "")
+    yes_price = float(market.get("yes_price", 0.0) or 0.0)
+    no_price = float(market.get("no_price", 0.0) or 0.0)
+    volume = float(market.get("volume", 0.0) or 0.0)
     market_id = market.get("market_id", "")
 
-    # Get unified score
-    scored = compute_unified_score(market)
+    # Use fast scoring (no external API calls)
+    scored = compute_fast_score(market)
 
-    # Get news details
-    news = get_news_signal(question)
-    headlines = news.get("headlines", [])
-    news_mentions = news.get("mentions_24h", 0)
+    # Get price history
+    price_data = get_price_change(market_id) if market_id else {}
+    change_24h = price_data.get("change_24h")
+    change_7d = price_data.get("change_7d")
 
     # Calculate time to close
     close_time_str = market.get("close_time")
@@ -161,16 +158,37 @@ def get_market_details(market: Dict) -> Dict:
             days_to_close = delta.total_seconds() / 86400
             close_date_str = close_time.strftime("%Y-%m-%d")
 
-    # Find related markets
-    related = find_related_markets(market, limit=3)
+    # Generate recommendation
+    confidence = scored.get("confidence", 0)
+    action = scored.get("action", "WATCH")
+    if confidence >= 70:
+        rec = f"Strong signal. Consider {action}."
+    elif confidence >= 50:
+        rec = f"Moderate signal. {action} with caution."
+    else:
+        rec = "Monitor for better entry point."
+
+    # Build simple signals list based on price
+    signals = []
+    if yes_price < 0.3:
+        signals.append({"name": "Low YES price", "value": yes_price, "positive": True})
+    elif yes_price > 0.7:
+        signals.append({"name": "High YES price", "value": yes_price, "positive": False})
+    if volume >= 100_000:
+        signals.append({"name": "Good volume", "value": volume, "positive": True})
 
     return {
+        **market,
         **scored,
-        "headlines": headlines,
-        "news_mentions": news_mentions,
+        "signals": signals,
+        "headlines": [],
+        "news_mentions": 0,
         "days_to_close": days_to_close,
         "close_date": close_date_str,
-        "related_markets": related,
+        "change_24h": change_24h,
+        "change_7d": change_7d,
+        "related_markets": [],
+        "recommendation": rec,
     }
 
 
@@ -246,6 +264,20 @@ def format_market_analysis(details: Dict) -> str:
 
     lines.append(f"\n<b>PRICES</b>")
     lines.append(f"YES: ${yes:.2f} | NO: ${no:.2f} | Vol: {vol_str}")
+
+    # Price trends
+    change_24h = details.get("change_24h")
+    change_7d = details.get("change_7d")
+    if change_24h is not None or change_7d is not None:
+        trend_parts = []
+        if change_24h is not None:
+            pct_24h = change_24h * 100
+            trend_parts.append(f"24h: {'+' if pct_24h >= 0 else ''}{pct_24h:.1f}%")
+        if change_7d is not None:
+            pct_7d = change_7d * 100
+            trend_parts.append(f"7d: {'+' if pct_7d >= 0 else ''}{pct_7d:.1f}%")
+        if trend_parts:
+            lines.append(f"Trend: {' | '.join(trend_parts)}")
 
     # Time to close
     days = details.get("days_to_close")

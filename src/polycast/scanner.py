@@ -19,6 +19,7 @@ from src.engines.market_filter import filter_markets_by_freshness
 from src.engines.social_matcher import match_trends_to_markets, get_markets_by_social_relevance
 from src.engines.unified_scorer import score_markets, format_signals_text
 from src.engines.market_search import search_markets, get_market_details
+from src.data.price_history import record_prices, get_price_change
 
 
 def scan_arbitrage(
@@ -211,15 +212,33 @@ def scan_social_trending(limit: int = 100, top_n: int = 5) -> List[Dict]:
         return []
 
 
-def scan_best_opportunities(limit: int = 100, top_n: int = 5, min_confidence: int = 40) -> List[Dict]:
+import time
+
+# Cache for scored markets
+_SCORED_CACHE: Dict = {"results": [], "timestamp": 0}
+_CACHE_TTL = 120  # 2 minutes
+
+
+def scan_best_opportunities(limit: int = 100, top_n: int = 5, min_confidence: int = 40, use_cache: bool = True) -> List[Dict]:
     """
     Find best opportunities using unified scoring across all signals.
 
-    Combines: EV, social trends, news, sentiment, volume into one confidence score.
+    Combines: EV, social trends, volume into one confidence score.
     Returns markets sorted by confidence with clear BUY/SELL/WATCH actions.
+
+    Uses fast_mode by default for quick response (no external API calls).
     """
     import logging
     logger = logging.getLogger(__name__)
+
+    # Check cache first
+    now = time.time()
+    if use_cache and _SCORED_CACHE["results"] and now - _SCORED_CACHE["timestamp"] < _CACHE_TTL:
+        cached = _SCORED_CACHE["results"]
+        filtered = [m for m in cached if m.get("confidence", 0) >= min_confidence]
+        logger.info(f"scan_best_opportunities: returning {len(filtered[:top_n])} from cache")
+        return filtered[:top_n]
+
     try:
         data = fetch_polymarket_markets(limit=limit)
         markets = data.get("markets") if isinstance(data, dict) else data
@@ -234,6 +253,9 @@ def scan_best_opportunities(limit: int = 100, top_n: int = 5, min_confidence: in
                 normalized.append(norm)
         logger.info(f"scan_best_opportunities: normalized {len(normalized)} markets")
 
+        # Record prices for history tracking
+        record_prices(normalized)
+
         # Apply freshness filter
         normalized = filter_markets_by_freshness(
             normalized,
@@ -243,9 +265,21 @@ def scan_best_opportunities(limit: int = 100, top_n: int = 5, min_confidence: in
         )
         logger.info(f"scan_best_opportunities: {len(normalized)} after freshness filter")
 
-        # Score all markets
-        scored = score_markets(normalized, min_confidence=min_confidence)
+        # Score all markets using FAST mode (no external API calls)
+        scored = score_markets(normalized, min_confidence=min_confidence, fast_mode=True)
         logger.info(f"scan_best_opportunities: {len(scored)} markets above {min_confidence} confidence")
+
+        # Enrich with price history
+        for m in scored:
+            market_id = m.get("market_id", "")
+            if market_id:
+                price_data = get_price_change(market_id)
+                m["change_24h"] = price_data.get("change_24h")
+                m["change_7d"] = price_data.get("change_7d")
+
+        # Update cache
+        _SCORED_CACHE["results"] = scored
+        _SCORED_CACHE["timestamp"] = now
 
         return scored[:top_n]
     except Exception as e:
