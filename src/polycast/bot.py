@@ -231,7 +231,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     help_message = (
         "<b>Help - PolyCAS Trading Assistant</b>\n\n"
         "<b>Main Commands</b>\n"
-        "- <code>/discover [category]</code> - Find best opportunities\n"
+        "- <code>/discover [category]</code> - Find best opportunities (fast)\n"
+        "- <code>/trending</code> - Markets with active news signals (slower)\n"
         "- <code>/market &lt;query&gt;</code> - Deep-dive into any market\n"
         "- <code>/alerts</code> - Manage notifications (on/off)\n"
         "- <code>/alert &lt;query&gt; &lt;price&gt;</code> - Set price alert\n"
@@ -245,9 +246,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<b>Examples</b>\n"
         "<code>/discover</code> - All categories\n"
         "<code>/discover crypto</code> - Crypto only\n"
-        "<code>/market bitcoin</code> - Analyze Bitcoin\n"
+        "<code>/trending</code> - News-driven markets\n"
+        "<code>/market bitcoin</code> - Search for Bitcoin\n"
+        "<code>/market politics</code> - Browse politics markets\n"
         "<code>/alert trump 0.60</code> - Price alert\n"
-        "<code>/digest on</code> - Daily summary at 9 AM UTC"
+        "<code>/digest on</code> - Daily summary at 9 AM UTC\n\n"
+        "<b>Categories</b>\n"
+        "politics, crypto, sports, entertainment, tech, economy, world, climate"
     )
     await update.message.reply_text(help_message, parse_mode="HTML")
 

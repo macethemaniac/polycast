@@ -216,7 +216,7 @@ import time
 
 # Cache for scored markets
 _SCORED_CACHE: Dict = {"results": [], "timestamp": 0}
-_CACHE_TTL = 120  # 2 minutes
+_CACHE_TTL = 30  # 30 seconds
 
 
 def scan_best_opportunities(limit: int = 100, top_n: int = 5, min_confidence: int = 40, use_cache: bool = True) -> List[Dict]:
@@ -276,6 +276,23 @@ def scan_best_opportunities(limit: int = 100, top_n: int = 5, min_confidence: in
                 price_data = get_price_change(market_id)
                 m["change_24h"] = price_data.get("change_24h")
                 m["change_7d"] = price_data.get("change_7d")
+
+        # Add variety: shuffle within confidence tiers and ensure category diversity
+        import random
+        random.seed(int(now / 60))  # Changes every minute for variety
+
+        # Group by confidence tier
+        high_conf = [m for m in scored if m.get("confidence", 0) >= 60]
+        med_conf = [m for m in scored if 40 <= m.get("confidence", 0) < 60]
+        low_conf = [m for m in scored if m.get("confidence", 0) < 40]
+
+        # Shuffle within tiers
+        random.shuffle(high_conf)
+        random.shuffle(med_conf)
+        random.shuffle(low_conf)
+
+        # Recombine - high first, then medium, then low
+        scored = high_conf + med_conf + low_conf
 
         # Update cache
         _SCORED_CACHE["results"] = scored

@@ -61,7 +61,7 @@ def search_markets(query: str, limit: int = 10) -> List[Dict]:
     if not query or len(query.strip()) < 2:
         return []
 
-    markets = _get_cached_markets(200)
+    markets = _get_cached_markets(500)
     if not markets:
         return []
 
@@ -72,6 +72,25 @@ def search_markets(query: str, limit: int = 10) -> List[Dict]:
         return []
 
     query_lower = query.lower().strip()
+
+    # Expand category keywords for broader search
+    CATEGORY_KEYWORDS = {
+        "politics": ["election", "president", "trump", "biden", "vote", "congress", "senate", "governor", "democrat", "republican", "poll", "political", "primary", "nominee"],
+        "crypto": ["bitcoin", "btc", "ethereum", "crypto", "blockchain", "token", "airdrop", "defi", "solana", "xrp", "megaeth", "stablecoin"],
+        "sports": ["nfl", "nba", "mlb", "football", "basketball", "soccer", "tennis", "golf", "super bowl", "world cup", "championship", "playoff", "college football", "ncaa", "player of the year"],
+        "entertainment": ["movie", "oscar", "grammy", "emmy", "album", "celebrity", "music", "film", "show", "netflix", "taylor swift", "spotify"],
+        "tech": ["openai", "google", "apple", "microsoft", "nvidia", "tesla", "spacex", "amazon", "hardware", "software", "chatgpt", "gpt-5"],
+        "economy": ["inflation", "fed", "interest rate", "gdp", "recession", "stock", "economy", "unemployment", "trade", "tariff", "deficit", "revenue", "budget"],
+        "world": ["war", "russia", "ukraine", "china", "israel", "gaza", "iran", "nato", "military", "sanctions", "ceasefire", "peace"],
+        "climate": ["climate", "carbon", "emissions", "temperature", "hottest", "warming", "hurricane", "wildfire", "renewable", "energy", "record"],
+    }
+
+    # Check if query is a category name
+    if query_lower in CATEGORY_KEYWORDS:
+        category_words = CATEGORY_KEYWORDS[query_lower]
+    else:
+        category_words = None
+
     query_words = query_lower.split()
 
     # Fast keyword matching
@@ -83,20 +102,36 @@ def search_markets(query: str, limit: int = 10) -> List[Dict]:
         score = 0.0
         matches = 0
 
-        # Exact phrase match (highest score)
-        if query_lower in question:
-            score = 1.0
-            matches = len(query_words)
-        else:
-            # Individual word matches
-            for word in query_words:
-                if len(word) >= 3 and word in question:
+        # If searching by category, check category keywords
+        if category_words:
+            import re
+            for cat_word in category_words:
+                # Use word boundary matching to avoid false positives
+                # e.g., "eth" shouldn't match "Kenneth", "ai" shouldn't match "Tagovailoa"
+                pattern = r'\b' + re.escape(cat_word) + r'\b'
+                if re.search(pattern, question, re.IGNORECASE):
                     matches += 1
                     score += 0.3
+            if matches > 0:
+                # Normalize score for category searches
+                score = min(1.0, score)
+        else:
+            # Exact phrase match (highest score)
+            if query_lower in question:
+                score = 1.0
+                matches = len(query_words)
+            else:
+                # Individual word matches
+                for word in query_words:
+                    if len(word) >= 3 and word in question:
+                        matches += 1
+                        score += 0.3
+
+            if matches > 0:
+                # Boost score by match ratio
+                score = min(score, 1.0) * (matches / len(query_words))
 
         if matches > 0:
-            # Boost score by match ratio
-            score = min(score, 1.0) * (matches / len(query_words))
             m_copy = m.copy()
             m_copy["search_similarity"] = score
             results.append(m_copy)
@@ -109,7 +144,7 @@ def search_markets(query: str, limit: int = 10) -> List[Dict]:
 
 def get_market_by_id(market_id: str) -> Optional[Dict]:
     """Get a specific market by ID."""
-    markets = _get_cached_markets(200)
+    markets = _get_cached_markets(500)
     for m in markets:
         if m.get("market_id") == market_id:
             return m
