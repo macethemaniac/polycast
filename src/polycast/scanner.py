@@ -287,6 +287,62 @@ def scan_best_opportunities(limit: int = 100, top_n: int = 5, min_confidence: in
         return []
 
 
+def scan_trending_news(limit: int = 100, top_n: int = 10) -> List[Dict]:
+    """
+    Find markets with active news signals using FULL scoring (with news API).
+
+    This is slower than scan_best_opportunities but finds markets with
+    actual trending news that may not be priced in yet.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        data = fetch_polymarket_markets(limit=limit)
+        markets = data.get("markets") if isinstance(data, dict) else data
+        if not markets:
+            logger.warning("scan_trending_news: no markets found")
+            return []
+
+        normalized = []
+        for m in markets:
+            norm = normalize_polymarket_market(m)
+            if norm:
+                normalized.append(norm)
+        logger.info(f"scan_trending_news: normalized {len(normalized)} markets")
+
+        # Apply freshness filter - focus on active markets
+        normalized = filter_markets_by_freshness(
+            normalized,
+            min_days_until_close=1.0,
+            max_days_until_close=60.0,  # Tighter window for news relevance
+            min_volume=1000.0,  # Higher volume threshold
+        )
+        logger.info(f"scan_trending_news: {len(normalized)} after freshness filter")
+
+        # Score using FULL mode (with news/sentiment API calls)
+        scored = score_markets(normalized, min_confidence=30, fast_mode=False)
+
+        # Filter to only markets with actual news signals
+        with_news = [
+            m for m in scored
+            if m.get("news_mentions", 0) >= 1 or m.get("social_boost", 0) > 10
+        ]
+
+        # Sort by news mentions + social boost
+        with_news.sort(
+            key=lambda x: x.get("news_mentions", 0) * 10 + x.get("social_boost", 0),
+            reverse=True
+        )
+
+        logger.info(f"scan_trending_news: {len(with_news)} markets with news signals")
+        return with_news[:top_n]
+
+    except Exception as e:
+        logger.error(f"scan_trending_news error: {e}", exc_info=True)
+        return []
+
+
 def scan_market_details(query: str) -> Tuple[Optional[Dict], Optional[str]]:
     """
     Get detailed analysis for a specific market by keyword search.

@@ -148,40 +148,46 @@ def determine_action(yes_price: float, no_price: float, ev: float, confidence: f
     Returns:
         (action, action_icon)
 
-    Logic: Only recommend BUY when we have actual signals (sentiment, social, news)
-    that suggest the market price may be wrong. Don't recommend buying just because
-    a price is extreme - extreme prices often reflect legitimate market knowledge.
+    Logic: Recommend BUY when we have signals (sentiment, social, news) AND the price
+    is in a reasonable range (not extreme like $0.01). Extreme prices need stronger signals.
     """
-    # Calculate signal strength - do we have real reasons to be contrarian?
-    has_positive_signals = sentiment > 0.2 or social_boost > 20 or news_mentions >= 3
-    has_negative_signals = sentiment < -0.2
-    signal_strength = abs(sentiment) * 30 + min(social_boost, 30) + min(news_mentions * 3, 20)
+    # Calculate signal strength from available data
+    signal_strength = abs(sentiment) * 30 + social_boost + min(news_mentions * 5, 25)
+    has_signals = sentiment > 0.15 or social_boost > 10 or news_mentions >= 2
+    has_strong_signals = sentiment > 0.3 or social_boost > 25 or news_mentions >= 5
 
-    # Strong signals with actual backing
-    if confidence >= 80 and signal_strength >= 30:
-        if has_positive_signals and yes_price < 0.4:
+    # Price ranges - be more cautious with extreme prices
+    is_extreme_yes = yes_price < 0.10  # Very unlikely according to market
+    is_extreme_no = no_price < 0.10
+    is_tradeable_yes = 0.10 <= yes_price <= 0.45  # Good value range for YES
+    is_tradeable_no = 0.10 <= no_price <= 0.45   # Good value range for NO
+
+    # Strong signals with actual backing - works even at extreme prices
+    if confidence >= 70 and has_strong_signals:
+        if sentiment > 0 and is_tradeable_yes:
             return "STRONG BUY YES", "[++]"
-        elif has_negative_signals and no_price < 0.4:
+        elif sentiment < 0 and is_tradeable_no:
             return "STRONG BUY NO", "[--]"
-        elif has_positive_signals and yes_price >= 0.6:
-            return "STRONG BUY NO", "[--]"
-        elif has_negative_signals and no_price >= 0.6:
+        elif social_boost > 25 and is_tradeable_yes:
             return "STRONG BUY YES", "[++]"
+        elif social_boost > 25 and is_tradeable_no:
+            return "STRONG BUY NO", "[--]"
 
-    # Moderate signals - need some actual signal backing
-    if confidence >= 60 and signal_strength >= 15:
-        if has_positive_signals and yes_price < 0.4:
+    # Moderate signals - good opportunities in tradeable range
+    if confidence >= 50 and has_signals:
+        if is_tradeable_yes and not is_extreme_yes:
             return "BUY YES", "[+]"
-        elif has_negative_signals and no_price < 0.4:
+        elif is_tradeable_no and not is_extreme_no:
             return "BUY NO", "[-]"
-        elif has_positive_signals and yes_price >= 0.6:
-            return "BUY NO", "[-]"
-        elif has_negative_signals and no_price >= 0.6:
+        # Even extreme prices can be opportunities with strong enough signals
+        elif is_extreme_yes and signal_strength >= 30:
             return "BUY YES", "[+]"
+        elif is_extreme_no and signal_strength >= 30:
+            return "BUY NO", "[-]"
 
-    # Interest signals - market is moving or has activity worth watching
-    if confidence >= 50 and (social_boost > 10 or news_mentions >= 2):
-        return "MONITOR", "[*]"
+    # Trending - market has social buzz, worth monitoring
+    if social_boost > 5 or news_mentions >= 1:
+        return "TRENDING", "[^]"
 
     return "WATCH", "[~]"
 

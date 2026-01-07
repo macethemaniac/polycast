@@ -35,6 +35,7 @@ from polycast.scanner import (
     scan_social_trending,
     scan_best_opportunities,
     scan_market_details,
+    scan_trending_news,
 )
 from src.engines.market_search import format_market_analysis
 from src.engines.watchlist import (
@@ -408,6 +409,100 @@ async def discover_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         logger.error("Error in discover_command: %s", exc, exc_info=True)
 
 
+async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Find markets with active news signals - uses full scoring with news API."""
+    processing_msg = await update.message.reply_text(
+        "Scanning for markets with trending news (this may take ~30s)...",
+        parse_mode="HTML",
+    )
+    try:
+        results = scan_trending_news(limit=100, top_n=10)
+
+        if not results:
+            await processing_msg.edit_text(
+                "No markets with significant news signals found right now.\n"
+                "<i>This scan checks GDELT for actual news mentions.</i>",
+                parse_mode="HTML"
+            )
+            return
+
+        def _esc(text: str) -> str:
+            return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        out_lines = [
+            "<b>📰 TRENDING NEWS MARKETS</b>",
+            "<i>Markets with recent news coverage</i>",
+            "━━━━━━━━━━━━━━━━━━━━━━"
+        ]
+
+        for i, r in enumerate(results[:5], 1):
+            q = _esc(r.get("question", ""))
+            if len(q) > 100:
+                q = q[:100] + "..."
+            yes = r.get("yes_price", 0.0)
+            no = r.get("no_price", 0.0)
+            vol = r.get("volume", 0.0)
+            confidence = r.get("confidence", 0.0)
+            action = r.get("action", "WATCH")
+            action_icon = r.get("action_icon", "[~]")
+            news_mentions = r.get("news_mentions", 0)
+            sentiment = r.get("sentiment", 0.0)
+            headlines = r.get("headlines", [])
+
+            # Format volume
+            if vol >= 1_000_000:
+                vol_str = f"${vol/1_000_000:.1f}M"
+            elif vol >= 1_000:
+                vol_str = f"${vol/1_000:.0f}K"
+            else:
+                vol_str = f"${vol:.0f}"
+
+            # Sentiment indicator
+            if sentiment > 0.2:
+                sent_str = "📈 Positive"
+            elif sentiment < -0.2:
+                sent_str = "📉 Negative"
+            else:
+                sent_str = "➡️ Neutral"
+
+            out_lines.append(f"\n<b>#{i} {action_icon} {action}</b> ({confidence:.0f}/100)")
+            out_lines.append(f"<b>Q:</b> {q}")
+            out_lines.append(f"YES ${yes:.2f} | NO ${no:.2f} | Vol: {vol_str}")
+            out_lines.append(f"📰 {news_mentions} news mentions | {sent_str}")
+            if headlines:
+                headline = _esc(headlines[0][:80])
+                out_lines.append(f"<i>» {headline}...</i>")
+
+        out_lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+        out_lines.append("<i>Use /discover for fast scan (no news API)</i>")
+
+        # Build keyboard
+        number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+        keyboard = []
+        for i, r in enumerate(results[:5]):
+            market_id = r.get("market_id", "")[:20]
+            market_url = r.get("market_url", "")
+            num_emoji = number_emojis[i] if i < len(number_emojis) else f"#{i+1}"
+
+            if market_url:
+                keyboard.append([
+                    InlineKeyboardButton(f"{num_emoji} View Market", url=market_url)
+                ])
+            keyboard.append([
+                InlineKeyboardButton("📊 Details", callback_data=f"details:{market_id}"),
+                InlineKeyboardButton("🔔 Set Alert", callback_data=f"alert:{market_id}"),
+            ])
+        keyboard.append([
+            InlineKeyboardButton("🔄 Refresh", callback_data="refresh:trending"),
+        ])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML", reply_markup=reply_markup)
+    except Exception as exc:
+        await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")
+        logger.error("Error in trending_command: %s", exc, exc_info=True)
+
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle inline button presses from /discover and /market commands."""
     query = update.callback_query
@@ -574,6 +669,87 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 ])
             keyboard.append([
                 InlineKeyboardButton("🔄 Refresh", callback_data="refresh:discover"),
+            ])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await query.edit_message_text("\n".join(out_lines), parse_mode="HTML", reply_markup=reply_markup)
+
+        elif payload == "trending":
+            await query.edit_message_text("Refreshing trending news markets...", parse_mode="HTML")
+
+            results = scan_trending_news(limit=100, top_n=10)
+
+            if not results:
+                await query.edit_message_text(
+                    "No markets with significant news signals found.\n<i>Try again later.</i>",
+                    parse_mode="HTML"
+                )
+                return
+
+            def _esc(text: str) -> str:
+                return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+            out_lines = [
+                "<b>📰 TRENDING NEWS MARKETS</b>",
+                "<i>Markets with recent news coverage</i>",
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ]
+
+            for i, r in enumerate(results[:5], 1):
+                q = _esc(r.get("question", ""))
+                if len(q) > 100:
+                    q = q[:100] + "..."
+                yes = r.get("yes_price", 0.0)
+                no = r.get("no_price", 0.0)
+                vol = r.get("volume", 0.0)
+                confidence = r.get("confidence", 0.0)
+                action_str = r.get("action", "WATCH")
+                action_icon = r.get("action_icon", "[~]")
+                news_mentions = r.get("news_mentions", 0)
+                sentiment = r.get("sentiment", 0.0)
+                headlines = r.get("headlines", [])
+
+                if vol >= 1_000_000:
+                    vol_str = f"${vol/1_000_000:.1f}M"
+                elif vol >= 1_000:
+                    vol_str = f"${vol/1_000:.0f}K"
+                else:
+                    vol_str = f"${vol:.0f}"
+
+                if sentiment > 0.2:
+                    sent_str = "📈 Positive"
+                elif sentiment < -0.2:
+                    sent_str = "📉 Negative"
+                else:
+                    sent_str = "➡️ Neutral"
+
+                out_lines.append(f"\n<b>#{i} {action_icon} {action_str}</b> ({confidence:.0f}/100)")
+                out_lines.append(f"<b>Q:</b> {q}")
+                out_lines.append(f"YES ${yes:.2f} | NO ${no:.2f} | Vol: {vol_str}")
+                out_lines.append(f"📰 {news_mentions} news mentions | {sent_str}")
+                if headlines:
+                    headline = _esc(headlines[0][:80])
+                    out_lines.append(f"<i>» {headline}...</i>")
+
+            out_lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+
+            number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+            keyboard = []
+            for i, r in enumerate(results[:5]):
+                market_id = r.get("market_id", "")[:20]
+                market_url = r.get("market_url", "")
+                num_emoji = number_emojis[i] if i < len(number_emojis) else f"#{i+1}"
+
+                if market_url:
+                    keyboard.append([
+                        InlineKeyboardButton(f"{num_emoji} View Market", url=market_url)
+                    ])
+                keyboard.append([
+                    InlineKeyboardButton("📊 Details", callback_data=f"details:{market_id}"),
+                    InlineKeyboardButton("🔔 Set Alert", callback_data=f"alert:{market_id}"),
+                ])
+            keyboard.append([
+                InlineKeyboardButton("🔄 Refresh", callback_data="refresh:trending"),
             ])
             reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -1226,6 +1402,7 @@ def main() -> None:
     application.add_handler(CommandHandler("help", help_command))
     # Main commands
     application.add_handler(CommandHandler("discover", discover_command))
+    application.add_handler(CommandHandler("trending", trending_command))
     application.add_handler(CommandHandler("market", market_command))
     # Quick scans
     application.add_handler(CommandHandler("scan", scan_command))
