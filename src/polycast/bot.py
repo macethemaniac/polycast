@@ -384,11 +384,14 @@ async def discover_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         keyboard = []
         for i, r in enumerate(results, 1):
             market_id = r.get("market_id", "")[:20]  # Truncate for callback data
-            q_short = r.get("question", "")[:20]
-            keyboard.append([
+            market_url = r.get("market_url", "")
+            row = [
                 InlineKeyboardButton(f"#{i} Details", callback_data=f"details:{market_id}"),
                 InlineKeyboardButton(f"#{i} Alert", callback_data=f"alert:{market_id}"),
-            ])
+            ]
+            if market_url:
+                row.append(InlineKeyboardButton(f"#{i} View", url=market_url))
+            keyboard.append(row)
         keyboard.append([
             InlineKeyboardButton("Refresh", callback_data="refresh:discover"),
         ])
@@ -430,11 +433,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         details = get_market_details(market)
         analysis_text = format_market_analysis(details)
 
-        # Add back button
-        keyboard = [[
+        # Add back button and view link
+        market_url = details.get("market_url", "")
+        row = [
             InlineKeyboardButton("Back to Discover", callback_data="refresh:discover"),
             InlineKeyboardButton("Set Alert", callback_data=f"alert:{market_id}"),
-        ]]
+        ]
+        if market_url:
+            row.insert(0, InlineKeyboardButton("View", url=market_url))
+        keyboard = [row]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await query.edit_message_text(analysis_text, parse_mode="HTML", reply_markup=reply_markup)
@@ -548,10 +555,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             keyboard = []
             for i, r in enumerate(results, 1):
                 market_id = r.get("market_id", "")[:20]
-                keyboard.append([
+                market_url = r.get("market_url", "")
+                row = [
                     InlineKeyboardButton(f"#{i} Details", callback_data=f"details:{market_id}"),
                     InlineKeyboardButton(f"#{i} Alert", callback_data=f"alert:{market_id}"),
-                ])
+                ]
+                if market_url:
+                    row.append(InlineKeyboardButton(f"#{i} View", url=market_url))
+                keyboard.append(row)
             keyboard.append([
                 InlineKeyboardButton("Refresh", callback_data="refresh:discover"),
             ])
@@ -589,10 +600,14 @@ async def market_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         # Add inline buttons for actions
         market_id = details.get("market_id", "")[:20]
-        keyboard = [[
+        market_url = details.get("market_url", "")
+        row = [
             InlineKeyboardButton("Set Alert", callback_data=f"alert:{market_id}"),
             InlineKeyboardButton("Discover More", callback_data="refresh:discover"),
-        ]]
+        ]
+        if market_url:
+            row.insert(0, InlineKeyboardButton("View on Polymarket", url=market_url))
+        keyboard = [row]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await processing_msg.edit_text(analysis_text, parse_mode="HTML", reply_markup=reply_markup)

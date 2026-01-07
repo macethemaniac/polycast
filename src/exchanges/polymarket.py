@@ -76,6 +76,10 @@ def normalize_polymarket_market(m: Dict) -> Dict | None:
         rules = m.get("rules") or ""
         category = m.get("category") or ""
         tags = m.get("tags") or m.get("tickers") or []
+        slug = m.get("slug") or ""
+
+        # Build Polymarket URL
+        market_url = f"https://polymarket.com/event/{slug}" if slug else ""
 
         return {
             "market_id": market_id,
@@ -90,6 +94,8 @@ def normalize_polymarket_market(m: Dict) -> Dict | None:
             "rules": rules,
             "category": category,
             "tags": tags,
+            "slug": slug,
+            "market_url": market_url,
         }
     except Exception as exc:
         logger.debug("Failed to normalize market: %s", exc)
