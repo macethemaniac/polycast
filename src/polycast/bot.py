@@ -378,19 +378,19 @@ async def discover_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 out_lines.append(f"<i>Signals: {signal_text}</i>")
 
         out_lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
-        out_lines.append("<i>Tap buttons below for actions</i>")
+        out_lines.append("<i>Tap to view on Polymarket</i>")
 
-        # Build inline keyboard with quick actions
+        # Build minimal inline keyboard - just View links in rows of 3
         keyboard = []
+        row = []
         for i, r in enumerate(results, 1):
-            market_id = r.get("market_id", "")[:20]  # Truncate for callback data
             market_url = r.get("market_url", "")
-            row = [
-                InlineKeyboardButton(f"#{i} Details", callback_data=f"details:{market_id}"),
-                InlineKeyboardButton(f"#{i} Alert", callback_data=f"alert:{market_id}"),
-            ]
             if market_url:
                 row.append(InlineKeyboardButton(f"#{i} View", url=market_url))
+            if len(row) == 3:  # 3 buttons per row
+                keyboard.append(row)
+                row = []
+        if row:  # Add remaining buttons
             keyboard.append(row)
         keyboard.append([
             InlineKeyboardButton("Refresh", callback_data="refresh:discover"),
@@ -550,18 +550,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     out_lines.append(f"<i>Signals: {signal_text}</i>")
 
             out_lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
-            out_lines.append("<i>Tap buttons below for actions</i>")
+            out_lines.append("<i>Tap to view on Polymarket</i>")
 
+            # Build minimal inline keyboard - just View links in rows of 3
             keyboard = []
+            row = []
             for i, r in enumerate(results, 1):
-                market_id = r.get("market_id", "")[:20]
                 market_url = r.get("market_url", "")
-                row = [
-                    InlineKeyboardButton(f"#{i} Details", callback_data=f"details:{market_id}"),
-                    InlineKeyboardButton(f"#{i} Alert", callback_data=f"alert:{market_id}"),
-                ]
                 if market_url:
                     row.append(InlineKeyboardButton(f"#{i} View", url=market_url))
+                if len(row) == 3:
+                    keyboard.append(row)
+                    row = []
+            if row:
                 keyboard.append(row)
             keyboard.append([
                 InlineKeyboardButton("Refresh", callback_data="refresh:discover"),
