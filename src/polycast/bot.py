@@ -378,22 +378,27 @@ async def discover_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 out_lines.append(f"<i>Signals: {signal_text}</i>")
 
         out_lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
-        out_lines.append("<i>Tap to view on Polymarket</i>")
 
-        # Build minimal inline keyboard - just View links in rows of 3
+        # Build grouped keyboard - two rows per market with emojis
+        number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
         keyboard = []
-        row = []
-        for i, r in enumerate(results, 1):
+        for i, r in enumerate(results):
+            market_id = r.get("market_id", "")[:20]
             market_url = r.get("market_url", "")
+            num_emoji = number_emojis[i] if i < len(number_emojis) else f"#{i+1}"
+
+            # Row 1: View Market button (if URL available)
             if market_url:
-                row.append(InlineKeyboardButton(f"#{i} View", url=market_url))
-            if len(row) == 3:  # 3 buttons per row
-                keyboard.append(row)
-                row = []
-        if row:  # Add remaining buttons
-            keyboard.append(row)
+                keyboard.append([
+                    InlineKeyboardButton(f"{num_emoji} View Market", url=market_url)
+                ])
+            # Row 2: Details and Alert buttons
+            keyboard.append([
+                InlineKeyboardButton("📊 Details", callback_data=f"details:{market_id}"),
+                InlineKeyboardButton("🔔 Set Alert", callback_data=f"alert:{market_id}"),
+            ])
         keyboard.append([
-            InlineKeyboardButton("Refresh", callback_data="refresh:discover"),
+            InlineKeyboardButton("🔄 Refresh", callback_data="refresh:discover"),
         ])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -433,15 +438,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         details = get_market_details(market)
         analysis_text = format_market_analysis(details)
 
-        # Add back button and view link
+        # Add buttons with emojis
         market_url = details.get("market_url", "")
-        row = [
-            InlineKeyboardButton("Back to Discover", callback_data="refresh:discover"),
-            InlineKeyboardButton("Set Alert", callback_data=f"alert:{market_id}"),
-        ]
+        keyboard = []
         if market_url:
-            row.insert(0, InlineKeyboardButton("View", url=market_url))
-        keyboard = [row]
+            keyboard.append([InlineKeyboardButton("🔗 View on Polymarket", url=market_url)])
+        keyboard.append([
+            InlineKeyboardButton("🔔 Set Alert", callback_data=f"alert:{market_id}"),
+            InlineKeyboardButton("⬅️ Back", callback_data="refresh:discover"),
+        ])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await query.edit_message_text(analysis_text, parse_mode="HTML", reply_markup=reply_markup)
@@ -550,22 +555,25 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     out_lines.append(f"<i>Signals: {signal_text}</i>")
 
             out_lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
-            out_lines.append("<i>Tap to view on Polymarket</i>")
 
-            # Build minimal inline keyboard - just View links in rows of 3
+            # Build grouped keyboard - two rows per market with emojis
+            number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
             keyboard = []
-            row = []
-            for i, r in enumerate(results, 1):
+            for i, r in enumerate(results):
+                market_id = r.get("market_id", "")[:20]
                 market_url = r.get("market_url", "")
+                num_emoji = number_emojis[i] if i < len(number_emojis) else f"#{i+1}"
+
                 if market_url:
-                    row.append(InlineKeyboardButton(f"#{i} View", url=market_url))
-                if len(row) == 3:
-                    keyboard.append(row)
-                    row = []
-            if row:
-                keyboard.append(row)
+                    keyboard.append([
+                        InlineKeyboardButton(f"{num_emoji} View Market", url=market_url)
+                    ])
+                keyboard.append([
+                    InlineKeyboardButton("📊 Details", callback_data=f"details:{market_id}"),
+                    InlineKeyboardButton("🔔 Set Alert", callback_data=f"alert:{market_id}"),
+                ])
             keyboard.append([
-                InlineKeyboardButton("Refresh", callback_data="refresh:discover"),
+                InlineKeyboardButton("🔄 Refresh", callback_data="refresh:discover"),
             ])
             reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -599,16 +607,16 @@ async def market_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Format the analysis
         analysis_text = format_market_analysis(details)
 
-        # Add inline buttons for actions
+        # Add inline buttons with emojis
         market_id = details.get("market_id", "")[:20]
         market_url = details.get("market_url", "")
-        row = [
-            InlineKeyboardButton("Set Alert", callback_data=f"alert:{market_id}"),
-            InlineKeyboardButton("Discover More", callback_data="refresh:discover"),
-        ]
+        keyboard = []
         if market_url:
-            row.insert(0, InlineKeyboardButton("View on Polymarket", url=market_url))
-        keyboard = [row]
+            keyboard.append([InlineKeyboardButton("🔗 View on Polymarket", url=market_url)])
+        keyboard.append([
+            InlineKeyboardButton("🔔 Set Alert", callback_data=f"alert:{market_id}"),
+            InlineKeyboardButton("🔍 Discover More", callback_data="refresh:discover"),
+        ])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await processing_msg.edit_text(analysis_text, parse_mode="HTML", reply_markup=reply_markup)
