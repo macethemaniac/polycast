@@ -73,16 +73,44 @@ def search_markets(query: str, limit: int = 10) -> List[Dict]:
 
     query_lower = query.lower().strip()
 
-    # Expand category keywords for broader search
+    # Expand category keywords for broader search (global coverage)
     CATEGORY_KEYWORDS = {
-        "politics": ["election", "president", "trump", "biden", "vote", "congress", "senate", "governor", "democrat", "republican", "poll", "political", "primary", "nominee"],
-        "crypto": ["bitcoin", "btc", "ethereum", "crypto", "blockchain", "token", "airdrop", "defi", "solana", "xrp", "megaeth", "stablecoin"],
-        "sports": ["nfl", "nba", "mlb", "football", "basketball", "soccer", "tennis", "golf", "super bowl", "world cup", "championship", "playoff", "college football", "ncaa", "player of the year"],
-        "entertainment": ["movie", "oscar", "grammy", "emmy", "album", "celebrity", "music", "film", "show", "netflix", "taylor swift", "spotify"],
-        "tech": ["openai", "google", "apple", "microsoft", "nvidia", "tesla", "spacex", "amazon", "hardware", "software", "chatgpt", "gpt-5"],
-        "economy": ["inflation", "fed", "interest rate", "gdp", "recession", "stock", "economy", "unemployment", "trade", "tariff", "deficit", "revenue", "budget"],
-        "world": ["war", "russia", "ukraine", "china", "israel", "gaza", "iran", "nato", "military", "sanctions", "ceasefire", "peace"],
-        "climate": ["climate", "carbon", "emissions", "temperature", "hottest", "warming", "hurricane", "wildfire", "renewable", "energy", "record"],
+        "politics": [
+            # US
+            "election", "president", "trump", "biden", "vote", "congress", "senate", "governor", "democrat", "republican", "poll", "political", "primary", "nominee",
+            # Global
+            "minister", "parliament", "brexit", "eu", "european", "labour", "conservative", "liberal", "coalition", "referendum", "macron", "starmer", "modi", "xi jinping", "putin", "lula", "milei"
+        ],
+        "crypto": [
+            "bitcoin", "btc", "ethereum", "crypto", "blockchain", "token", "airdrop", "defi", "solana", "xrp", "megaeth", "stablecoin", "binance", "coinbase", "altcoin", "nft", "web3"
+        ],
+        "sports": [
+            # US sports
+            "nfl", "nba", "mlb", "super bowl", "college football", "ncaa", "player of the year",
+            # Global sports
+            "football", "basketball", "soccer", "tennis", "golf", "world cup", "champions league", "premier league", "la liga", "serie a", "bundesliga", "f1", "formula 1", "olympics", "cricket", "rugby", "uefa", "fifa", "grand slam", "wimbledon"
+        ],
+        "entertainment": [
+            "movie", "oscar", "grammy", "emmy", "album", "celebrity", "music", "film", "show", "netflix", "taylor swift", "spotify", "billboard", "box office", "streaming", "disney", "concert", "tour"
+        ],
+        "tech": [
+            "openai", "google", "apple", "microsoft", "nvidia", "tesla", "spacex", "amazon", "hardware", "software", "chatgpt", "gpt-5", "ai", "artificial intelligence", "semiconductor", "chip", "robot", "autonomous"
+        ],
+        "economy": [
+            # US economy
+            "fed", "deficit", "revenue", "budget", "tariff",
+            # Global economy
+            "inflation", "interest rate", "gdp", "recession", "stock", "economy", "unemployment", "trade", "central bank", "ecb", "bank of england", "imf", "world bank", "currency", "dollar", "euro", "yen", "yuan", "oil price", "opec", "commodity"
+        ],
+        "world": [
+            # Conflicts & geopolitics
+            "war", "russia", "ukraine", "china", "israel", "gaza", "iran", "nato", "military", "sanctions", "ceasefire", "peace", "taiwan", "korea", "venezuela",
+            # Regions
+            "middle east", "africa", "asia", "europe", "latin america", "india", "brazil", "mexico", "canada", "australia", "japan", "germany", "france", "uk", "united kingdom"
+        ],
+        "climate": [
+            "climate", "carbon", "emissions", "temperature", "hottest", "warming", "hurricane", "wildfire", "renewable", "energy", "record", "flood", "drought", "sea level", "glacier", "arctic", "antarctic", "cop28", "paris agreement", "net zero"
+        ],
     }
 
     # Check if query is a category name
