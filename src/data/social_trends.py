@@ -47,8 +47,9 @@ def _get_gdelt_trending_topics() -> List[Dict]:
 
         # Extract entities/topics from headlines
         topic_counts: Dict[str, int] = {}
-        # Common words to skip
+        # Common words to skip (including headline noise words)
         skip_words = {
+            # Common English words
             "the", "and", "for", "that", "this", "with", "from", "have", "has",
             "will", "are", "was", "were", "been", "being", "could", "would",
             "should", "may", "might", "must", "shall", "can", "need", "dare",
@@ -58,6 +59,14 @@ def _get_gdelt_trending_topics() -> List[Dict]:
             "only", "own", "same", "than", "too", "very", "just", "also", "now",
             "new", "first", "last", "says", "said", "report", "news", "today",
             "year", "years", "time", "world", "people", "week", "month", "day",
+            # Headline noise words
+            "what", "check", "best", "your", "price", "stock", "stocks", "market",
+            "markets", "which", "here", "these", "those", "watch", "look", "see",
+            "know", "make", "take", "come", "back", "next", "free", "live", "breaking",
+            "update", "latest", "ahead", "after", "before", "during", "january",
+            "february", "march", "april", "june", "july", "august", "september",
+            "october", "november", "december", "monday", "tuesday", "wednesday",
+            "thursday", "friday", "saturday", "sunday", "earnings", "results",
         }
 
         for art in articles:

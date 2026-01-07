@@ -306,10 +306,13 @@ def scan_best_opportunities(limit: int = 100, top_n: int = 5, min_confidence: in
 
 def scan_trending_news(limit: int = 100, top_n: int = 10) -> List[Dict]:
     """
-    Find markets with active news signals using FULL scoring (with news API).
+    Find markets matching current trending topics.
 
-    This is slower than scan_best_opportunities but finds markets with
-    actual trending news that may not be priced in yet.
+    Uses 2-phase approach for speed:
+    1. Fast: Match all markets to social trends (get social_boost)
+    2. Return markets with high social_boost (trending topics)
+
+    Much faster than full scoring - no external API calls.
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -332,28 +335,35 @@ def scan_trending_news(limit: int = 100, top_n: int = 10) -> List[Dict]:
         normalized = filter_markets_by_freshness(
             normalized,
             min_days_until_close=1.0,
-            max_days_until_close=60.0,  # Tighter window for news relevance
-            min_volume=1000.0,  # Higher volume threshold
+            max_days_until_close=60.0,
+            min_volume=500.0,  # Lower threshold to find more trending markets
         )
         logger.info(f"scan_trending_news: {len(normalized)} after freshness filter")
 
-        # Score using FULL mode (with news/sentiment API calls)
-        scored = score_markets(normalized, min_confidence=30, fast_mode=False)
+        # Phase 1: Match to social trends (fast - uses cached trends)
+        matched = match_trends_to_markets(normalized)
 
-        # Filter to only markets with actual news signals
-        with_news = [
-            m for m in scored
-            if m.get("news_mentions", 0) >= 1 or m.get("social_boost", 0) > 10
+        # Filter to markets with trend matches
+        with_trends = [
+            m for m in matched
+            if m.get("social_boost", 0) > 5 or len(m.get("trend_matches", [])) > 0
         ]
 
-        # Sort by news mentions + social boost
-        with_news.sort(
-            key=lambda x: x.get("news_mentions", 0) * 10 + x.get("social_boost", 0),
+        if not with_trends:
+            logger.info("scan_trending_news: no markets matched trends")
+            return []
+
+        # Phase 2: Fast score the trending markets (no external API calls)
+        scored = score_markets(with_trends, min_confidence=20, fast_mode=True)
+
+        # Sort by social_boost (strongest trend match first)
+        scored.sort(
+            key=lambda x: x.get("social_boost", 0),
             reverse=True
         )
 
-        logger.info(f"scan_trending_news: {len(with_news)} markets with news signals")
-        return with_news[:top_n]
+        logger.info(f"scan_trending_news: {len(scored)} markets with trend matches")
+        return scored[:top_n]
 
     except Exception as e:
         logger.error(f"scan_trending_news error: {e}", exc_info=True)
