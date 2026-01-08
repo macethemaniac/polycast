@@ -11,6 +11,8 @@ from typing import Dict, List, Optional
 
 from src.exchanges.polymarket import fetch_polymarket_markets, normalize_polymarket_market
 from src.engines.market_filter import filter_markets_by_freshness, parse_close_time
+from src.engines.unified_scorer import compute_unified_score, format_signals_text
+from src.ml.sentiment import score_texts
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +194,7 @@ def get_market_details(market: Dict) -> Dict:
         - price history (24h/7d changes)
         - recommendation
     """
-    from src.engines.unified_scorer import compute_fast_score, determine_action
+    from src.engines.unified_scorer import compute_unified_score
     from src.data.price_history import get_price_change
 
     question = market.get("question", "")
@@ -201,8 +203,8 @@ def get_market_details(market: Dict) -> Dict:
     volume = float(market.get("volume", 0.0) or 0.0)
     market_id = market.get("market_id", "")
 
-    # Use fast scoring (no external API calls)
-    scored = compute_fast_score(market)
+    # Use UNIFIED scoring for deep-dive (one market at a time is fast enough)
+    scored = compute_unified_score(market)
 
     # Get price history
     price_data = get_price_change(market_id) if market_id else {}
@@ -243,9 +245,6 @@ def get_market_details(market: Dict) -> Dict:
     return {
         **market,
         **scored,
-        "signals": signals,
-        "headlines": [],
-        "news_mentions": 0,
         "days_to_close": days_to_close,
         "close_date": close_date_str,
         "change_24h": change_24h,
@@ -368,10 +367,17 @@ def format_market_analysis(details: Dict) -> str:
         icon = "[+]" if positive else "[-]"
         lines.append(f"{icon} {name}")
 
-    # News headlines
+    # News headlines and sentiment
     headlines = details.get("headlines", [])
-    if headlines:
-        lines.append(f"\n<b>NEWS</b>")
+    news_mentions = details.get("news_mentions", 0)
+    sentiment = details.get("sentiment", 0.0)
+
+    if news_mentions > 0 or headlines:
+        lines.append(f"\n<b>NEWS & SENTIMENT</b>")
+        if news_mentions > 0:
+            sent_str = "📈 Positive" if sentiment > 0.2 else "📉 Negative" if sentiment < -0.2 else "➡️ Neutral"
+            lines.append(f"Mentions: {news_mentions} | Sentiment: {sent_str}")
+        
         for h in headlines[:2]:
             h_text = str(h)[:80]
             lines.append(f"- {h_text}")
