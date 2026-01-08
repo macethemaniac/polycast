@@ -307,14 +307,61 @@ def scan_best_opportunities(limit: int = 100, top_n: int = 5, min_confidence: in
         return []
 
 
-def scan_trending_news(limit: int = 200, top_n: int = 10) -> List[Dict]:
+def _detect_category(question: str) -> str:
+    """Detect market category from question text."""
+    q = question.lower()
+
+    # Sports keywords
+    if any(w in q for w in ["super bowl", "nfl", "nba", "mlb", "championship", "playoff",
+                            "world series", "stanley cup", "player of the year", "mvp",
+                            "premier league", "champions league", "world cup", "f1", "ufc"]):
+        return "sports"
+
+    # Politics keywords
+    if any(w in q for w in ["trump", "biden", "president", "election", "congress", "senate",
+                            "governor", "democrat", "republican", "vote", "poll", "primary",
+                            "parliament", "minister", "macron", "putin", "political"]):
+        return "politics"
+
+    # Crypto keywords
+    if any(w in q for w in ["bitcoin", "btc", "ethereum", "eth", "crypto", "solana", "xrp",
+                            "airdrop", "token", "blockchain", "defi", "nft"]):
+        return "crypto"
+
+    # Economy keywords
+    if any(w in q for w in ["fed", "inflation", "gdp", "recession", "interest rate", "deficit",
+                            "revenue", "budget", "tariff", "unemployment", "stock market"]):
+        return "economy"
+
+    # Tech keywords
+    if any(w in q for w in ["openai", "chatgpt", "gpt", "ai ", "apple", "google", "microsoft",
+                            "nvidia", "tesla", "spacex", "amazon", "meta", "tiktok"]):
+        return "tech"
+
+    # World/Geopolitics
+    if any(w in q for w in ["russia", "ukraine", "china", "israel", "gaza", "iran", "war",
+                            "ceasefire", "nato", "sanctions", "military", "taiwan"]):
+        return "world"
+
+    # Climate
+    if any(w in q for w in ["climate", "temperature", "hottest", "warming", "hurricane",
+                            "wildfire", "emissions", "carbon"]):
+        return "climate"
+
+    # Entertainment
+    if any(w in q for w in ["oscar", "grammy", "emmy", "movie", "album", "taylor swift",
+                            "netflix", "disney", "spotify", "box office"]):
+        return "entertainment"
+
+    return "other"
+
+
+def scan_trending_news(limit: int = 300, top_n: int = 10) -> List[Dict]:
     """
-    Find hot/trending markets based on Polymarket activity metrics.
+    Find hot/trending markets with CATEGORY DIVERSITY.
 
-    Uses actual 24h volume and price movement data from Polymarket,
-    NOT external news APIs. Fast and accurate.
-
-    Trending score = volume_24h * abs(price_change_24h) * 1000
+    Uses actual 24h volume and price movement data from Polymarket.
+    Ensures results include different categories (sports, politics, crypto, etc.)
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -338,47 +385,78 @@ def scan_trending_news(limit: int = 200, top_n: int = 10) -> List[Dict]:
             normalized,
             min_days_until_close=1.0,
             max_days_until_close=90.0,
-            min_volume=1000.0,  # Need some baseline volume
+            min_volume=500.0,  # Lower threshold for more variety
         )
         logger.info(f"scan_trending_news: {len(normalized)} after freshness filter")
 
-        # Calculate trending score based on activity
+        # Calculate trending score and detect category
         for m in normalized:
             vol_24h = m.get("volume_24h", 0) or 0
             price_chg = abs(m.get("price_change_24h", 0) or 0)
 
             # Trending score: high volume + price movement = hot market
-            # Normalize: $10k vol with 5% move = score of 500
             trending_score = (vol_24h / 1000) * (price_chg * 100) + (vol_24h / 10000)
             m["trending_score"] = trending_score
+
+            # Detect category
+            m["detected_category"] = _detect_category(m.get("question", ""))
 
             # Determine trend direction
             raw_chg = m.get("price_change_24h", 0) or 0
             if raw_chg > 0.02:
-                m["trend_direction"] = "📈 UP"
+                m["trend_direction"] = "📈"
             elif raw_chg < -0.02:
-                m["trend_direction"] = "📉 DOWN"
+                m["trend_direction"] = "📉"
             else:
-                m["trend_direction"] = "➡️ FLAT"
+                m["trend_direction"] = "➡️"
 
-        # Filter to markets with actual activity
-        active = [m for m in normalized if m.get("volume_24h", 0) > 5000]
+        # Group by category and get top from each
+        from collections import defaultdict
+        by_category = defaultdict(list)
+        for m in normalized:
+            if m.get("volume_24h", 0) > 500:  # Low threshold for diversity
+                by_category[m["detected_category"]].append(m)
 
-        if not active:
+        # Sort each category by trending score
+        for cat in by_category:
+            by_category[cat].sort(key=lambda x: x.get("trending_score", 0), reverse=True)
+
+        logger.info(f"Categories found: {list(by_category.keys())}")
+
+        # Round-robin pick - ONE from each category first, then fill with highest scores
+        results = []
+        categories = list(by_category.keys())
+
+        # Prioritize non-sports categories first for diversity
+        priority_order = ["world", "politics", "crypto", "tech", "economy", "climate", "entertainment", "other", "sports"]
+        categories.sort(key=lambda c: priority_order.index(c) if c in priority_order else 99)
+
+        # Phase 1: Get top 1 from each category
+        for cat in categories:
+            if by_category[cat]:
+                results.append(by_category[cat][0])
+
+        # Phase 2: Fill remaining slots with highest trending scores across all categories
+        all_remaining = []
+        for cat in categories:
+            all_remaining.extend(by_category[cat][1:])  # Skip first (already added)
+        all_remaining.sort(key=lambda x: x.get("trending_score", 0), reverse=True)
+
+        for m in all_remaining:
+            if len(results) >= top_n * 2:
+                break
+            if m not in results:
+                results.append(m)
+
+        if not results:
             # Fallback: just return highest volume markets
             normalized.sort(key=lambda x: x.get("volume_24h", 0), reverse=True)
-            active = normalized[:top_n]
-
-        # Sort by trending score
-        active.sort(key=lambda x: x.get("trending_score", 0), reverse=True)
+            results = normalized[:top_n]
 
         # Add confidence and action using fast scoring
-        scored = score_markets(active[:top_n * 2], min_confidence=0, fast_mode=True)
+        scored = score_markets(results, min_confidence=0, fast_mode=True)
 
-        # Re-sort by trending score (scoring might have reordered)
-        scored.sort(key=lambda x: x.get("trending_score", 0), reverse=True)
-
-        logger.info(f"scan_trending_news: {len(scored)} hot markets found")
+        logger.info(f"scan_trending_news: {len(scored)} hot markets from {len(by_category)} categories")
         return scored[:top_n]
 
     except Exception as e:
