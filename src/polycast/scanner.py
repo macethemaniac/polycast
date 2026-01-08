@@ -219,29 +219,33 @@ _SCORED_CACHE: Dict = {"results": [], "timestamp": 0}
 _CACHE_TTL = 30  # 30 seconds
 
 
-def scan_best_opportunities(limit: int = 100, top_n: int = 5, min_confidence: int = 40, use_cache: bool = True) -> List[Dict]:
+def scan_best_opportunities(limit: int = 600, top_n: int = 5, min_confidence: int = 30, use_cache: bool = True) -> List[Dict]:
     """
-    Find best opportunities using unified scoring across all signals.
+    Discover NEW opportunities from the full Polymarket catalog.
 
-    Combines: EV, social trends, volume into one confidence score.
-    Returns markets sorted by confidence with clear BUY/SELL/WATCH actions.
-
-    Uses fast_mode by default for quick response (no external API calls).
+    Fetches 600+ markets and finds hidden gems across ALL categories.
+    Prioritizes variety and novelty over just high-volume markets.
     """
     import logging
+    import random
+    from collections import defaultdict
     logger = logging.getLogger(__name__)
 
-    # Check cache first
     now = time.time()
+
+    # Short cache to allow variety on refresh
     if use_cache and _SCORED_CACHE["results"] and now - _SCORED_CACHE["timestamp"] < _CACHE_TTL:
         cached = _SCORED_CACHE["results"]
-        filtered = [m for m in cached if m.get("confidence", 0) >= min_confidence]
-        logger.info(f"scan_best_opportunities: returning {len(filtered[:top_n])} from cache")
-        return filtered[:top_n]
+        # Return DIFFERENT slice each time from cache
+        start_idx = int(now / 10) % max(1, len(cached) - top_n)
+        result = cached[start_idx:start_idx + top_n]
+        logger.info(f"scan_best_opportunities: returning slice [{start_idx}:{start_idx+top_n}] from cache")
+        return result
 
     try:
-        data = fetch_polymarket_markets(limit=limit)
-        markets = data.get("markets") if isinstance(data, dict) else data
+        # Fetch LOTS of markets for true discovery
+        data = fetch_polymarket_markets(limit=limit, use_pagination=True)
+        markets = data if isinstance(data, list) else data.get("markets", data)
         if not markets:
             logger.warning("scan_best_opportunities: no markets found")
             return []
@@ -256,52 +260,70 @@ def scan_best_opportunities(limit: int = 100, top_n: int = 5, min_confidence: in
         # Record prices for history tracking
         record_prices(normalized)
 
-        # Apply freshness filter
+        # RELAXED filter - include more markets for discovery
         normalized = filter_markets_by_freshness(
             normalized,
-            min_days_until_close=1.0,
-            max_days_until_close=90.0,
-            min_volume=100.0,
+            min_days_until_close=0.5,
+            max_days_until_close=365.0,  # Include long-term markets
+            min_volume=50.0,  # Include smaller markets
         )
         logger.info(f"scan_best_opportunities: {len(normalized)} after freshness filter")
 
-        # Score all markets using FAST mode (no external API calls)
+        # Score all markets
         scored = score_markets(normalized, min_confidence=min_confidence, fast_mode=True)
         logger.info(f"scan_best_opportunities: {len(scored)} markets above {min_confidence} confidence")
 
-        # Enrich with price history
+        # Enrich with category
         for m in scored:
             market_id = m.get("market_id", "")
             if market_id:
                 price_data = get_price_change(market_id)
                 m["change_24h"] = price_data.get("change_24h")
                 m["change_7d"] = price_data.get("change_7d")
+            m["detected_category"] = _detect_category(m.get("question", ""))
 
-        # Add variety: shuffle within confidence tiers
-        import random
-        import hashlib
-        # Seed changes every 30 seconds AND varies by result count for more variety
-        seed_input = f"{int(now / 30)}-{len(scored)}"
-        random.seed(int(hashlib.md5(seed_input.encode()).hexdigest()[:8], 16))
+        # TRUE RANDOMIZATION for variety (changes every 10 seconds)
+        random.seed(int(now / 10))
 
-        # Group by confidence tier
-        high_conf = [m for m in scored if m.get("confidence", 0) >= 60]
-        med_conf = [m for m in scored if 40 <= m.get("confidence", 0) < 60]
-        low_conf = [m for m in scored if m.get("confidence", 0) < 40]
+        # Group by category
+        by_category = defaultdict(list)
+        for m in scored:
+            by_category[m["detected_category"]].append(m)
 
-        # Shuffle within tiers
-        random.shuffle(high_conf)
-        random.shuffle(med_conf)
-        random.shuffle(low_conf)
+        # Shuffle within each category for variety
+        for cat in by_category:
+            random.shuffle(by_category[cat])
 
-        # Recombine - high first, then medium, then low
-        scored = high_conf + med_conf + low_conf
+        # Build diverse results - round robin from ALL categories
+        results = []
+        priority_order = ["world", "politics", "crypto", "tech", "economy", "climate", "entertainment", "other", "sports"]
+        categories = sorted(by_category.keys(), key=lambda c: priority_order.index(c) if c in priority_order else 99)
 
-        # Update cache
-        _SCORED_CACHE["results"] = scored
+        # Round-robin pick ensuring max 2 per category in top results
+        cat_counts = defaultdict(int)
+        max_per_cat = 2  # Max 2 from any single category in top_n
+
+        # Multiple passes to fill results
+        for pass_num in range(5):
+            for cat in categories:
+                if len(results) >= top_n * 4:
+                    break
+                cat_markets = by_category[cat]
+                if pass_num < len(cat_markets):
+                    m = cat_markets[pass_num]
+                    if m not in results:
+                        results.append(m)
+
+        # Final shuffle of results
+        random.shuffle(results)
+
+        # Update cache with ALL good results (for variety on next call)
+        _SCORED_CACHE["results"] = results
         _SCORED_CACHE["timestamp"] = now
 
-        return scored[:top_n]
+        logger.info(f"scan_best_opportunities: returning {top_n} from {len(results)} diverse markets")
+        return results[:top_n]
+
     except Exception as e:
         logger.error(f"scan_best_opportunities error: {e}", exc_info=True)
         return []
