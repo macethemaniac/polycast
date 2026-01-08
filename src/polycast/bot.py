@@ -231,7 +231,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             InlineKeyboardButton("📊 Trending News", callback_data="refresh:trending")
         ],
         [
-            InlineKeyboardButton("📖 Help & Commands", callback_data="menu:help")
+            InlineKeyboardButton("⚔️ Arbitrage Hub", callback_data="menu:arbitrage"),
+            InlineKeyboardButton("🔔 Manage Alerts", callback_data="menu:alerts")
+        ],
+        [
+            InlineKeyboardButton("📬 Daily Digest", callback_data="menu:digest"),
+            InlineKeyboardButton("📖 Help Center", callback_data="menu:help")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -634,6 +639,84 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(help_text, parse_mode="HTML", reply_markup=reply_markup)
 
+        elif payload == "arbitrage":
+            arb_text = (
+                "<b>⚔️ Arbitrage Hub</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "<i>Select a scan type to find market inefficiencies:</i>\n\n"
+                "• <b>Polymarket Y/N</b>: Internal YES/NO mispricing\n"
+                "• <b>Cross-Market</b>: Polymarket vs Kalshi gaps\n"
+                "• <b>Crypto Spot</b>: BTC/USDT arbitrage across exchanges"
+            )
+            keyboard = [
+                [InlineKeyboardButton("💎 Poly Y/N", callback_data="refresh:polyarb")],
+                [InlineKeyboardButton("🔄 Cross-Market", callback_data="refresh:xarb")],
+                [InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:start")]
+            ]
+            await query.edit_message_text(arb_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+
+        elif payload == "alerts":
+            # Just show a simple summary and link to commands for now
+            alert_text = (
+                "<b>🔔 Alerts & Monitoring</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "Stay ahead of the market with real-time notifications.\n\n"
+                "• <b>Price Alerts</b>: Custom market triggers\n"
+                "• <b>Global Alerts</b>: New opportunity pings\n\n"
+                "<i>Use /alert &lt;query&gt; &lt;price&gt; to set a target.</i>"
+            )
+            keyboard = [
+                [InlineKeyboardButton("📋 View My Alerts", callback_data="menu:view_alerts")],
+                [InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:start")]
+            ]
+            await query.edit_message_text(alert_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+
+        elif payload == "view_alerts":
+            chat_id = str(query.message.chat_id)
+            alerts = load_price_alerts()
+            user_alerts = alerts.get(chat_id, [])
+            if not user_alerts:
+                text = "<b>No price alerts set.</b>"
+            else:
+                lines = ["<b>Your Price Alerts</b>", "━━━━━━━━━━━━━━━━━━━━"]
+                for i, a in enumerate(user_alerts, 1):
+                    lines.append(f"{i}. {a['query']} → ${a['target_price']:.2f}")
+                text = "\n".join(lines)
+            keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="menu:alerts")]]
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+
+        elif payload == "digest":
+            digest_text = (
+                "<b>📬 Daily Digest Settings</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "Receive a curated summary of top picks every morning.\n\n"
+                "<i>Use <code>/digest on [hour] [tz]</code> to configure.</i>"
+            )
+            keyboard = [
+                [InlineKeyboardButton("✅ Enable (9 AM UTC)", callback_data="menu:digest_on")],
+                [InlineKeyboardButton("❌ Disable", callback_data="menu:digest_off")],
+                [InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:start")]
+            ]
+            await query.edit_message_text(digest_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+
+        elif payload == "digest_on":
+            chat_id = str(query.message.chat_id)
+            settings = load_digest_settings()
+            settings[chat_id] = {"enabled": True, "hour": 9, "timezone": "UTC"}
+            save_digest_settings(settings)
+            await query.answer("Daily Digest ENABLED (9 AM UTC)")
+            await query.edit_message_text("<b>📬 Daily Digest ENABLED</b> (9 AM UTC)", parse_mode="HTML", 
+                                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="menu:digest")]]))
+
+        elif payload == "digest_off":
+            chat_id = str(query.message.chat_id)
+            settings = load_digest_settings()
+            settings[chat_id] = {"enabled": False}
+            save_digest_settings(settings)
+            await query.answer("Daily Digest DISABLED")
+            await query.edit_message_text("<b>📭 Daily Digest DISABLED</b>", parse_mode="HTML",
+                                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="menu:digest")]]))
+
         elif payload == "start":
             # Re-generate the start message
             welcome_message = (
@@ -655,7 +738,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     InlineKeyboardButton("📊 Trending News", callback_data="refresh:trending")
                 ],
                 [
-                    InlineKeyboardButton("📖 Help & Commands", callback_data="menu:help")
+                    InlineKeyboardButton("⚔️ Arbitrage Hub", callback_data="menu:arbitrage"),
+                    InlineKeyboardButton("🔔 Manage Alerts", callback_data="menu:alerts")
+                ],
+                [
+                    InlineKeyboardButton("📬 Daily Digest", callback_data="menu:digest"),
+                    InlineKeyboardButton("📖 Help Center", callback_data="menu:help")
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -845,6 +933,81 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             reply_markup = InlineKeyboardMarkup(keyboard)
 
             await query.edit_message_text("\n".join(out_lines), parse_mode="HTML", reply_markup=reply_markup)
+
+        elif payload == "polyarb":
+            await query.edit_message_text("Checking Polymarket for arbitrage...", parse_mode="HTML")
+            try:
+                results = scan_polymarket_raw(limit=200, threshold=0.02)
+                if not results:
+                    await query.edit_message_text("No Polymarket arbitrage found.\n<i>Try again later.</i>", parse_mode="HTML",
+                                                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="refresh:polyarb"),
+                                                                                     InlineKeyboardButton("⬅️ Back", callback_data="menu:arbitrage")]]))
+                    return
+
+                def _esc(text: str) -> str:
+                    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+                out_lines = [
+                    "<b>💎 Y/N MISPRICING SCAN</b>",
+                    "━━━━━━━━━━━━━━━━━━━━━━",
+                    "<i>Detected Polymarket Arbitrage</i>\n"
+                ]
+                for r in results[:5]:
+                    q = _esc(r.get("question", ""))
+                    if len(q) > 100: q = q[:100] + "..."
+                    yes, no = r.get("yes_price", 0.0), r.get("no_price", 0.0)
+                    profit, vol = r.get("profit_pct", 0.0), r.get("volume", 0.0)
+                    out_lines.append(f"• <b>{q}</b>")
+                    out_lines.append(f"  YES: {yes:.3f} | NO: {no:.3f} | <b>Profit: {profit:.2f}%</b>")
+                    out_lines.append(f"  Vol: ${vol/1000:.1f}K\n")
+                
+                keyboard = [
+                    [InlineKeyboardButton("🔄 Refresh", callback_data="refresh:polyarb")],
+                    [InlineKeyboardButton("⬅️ Back", callback_data="menu:arbitrage")]
+                ]
+                await query.edit_message_text("\n".join(out_lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+            except Exception as exc:
+                await query.edit_message_text(f"<b>Error:</b> {exc}", parse_mode="HTML",
+                                             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="menu:arbitrage")]]))
+
+        elif payload == "xarb":
+            await query.edit_message_text("Scanning cross-market mismatches...", parse_mode="HTML")
+            try:
+                results, error = scan_cross_market_mismatches(limit=200, top_n=5)
+                if error or not results:
+                    msg = error if error else "No mismatches found."
+                    await query.edit_message_text(f"{msg}\n<i>Try again later.</i>", parse_mode="HTML",
+                                                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="refresh:xarb"),
+                                                                                     InlineKeyboardButton("⬅️ Back", callback_data="menu:arbitrage")]]))
+                    return
+
+                def _esc(text: str) -> str:
+                    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+                out_lines = [
+                    "<b>🔄 CROSS-MARKET MISMATCHES</b>",
+                    "━━━━━━━━━━━━━━━━━━━━━━",
+                    "<i>Polymarket vs Kalshi Comparison</i>\n",
+                    "⚠️ <i>Warning: different settlement rules apply.</i>\n"
+                ]
+                for r in results:
+                    pq, kq = _esc(r.get("question_poly", "")), _esc(r.get("question_kalshi", ""))
+                    if len(pq) > 100: pq = pq[:100] + "..."
+                    edge, py, ky = r.get("edge_pct", 0.0), r.get("poly_yes", 0.0), r.get("kalshi_yes", 0.0)
+                    conf_label = r.get("confidence_label", "LOW")
+                    out_lines.append(f"• <b>Edge: {edge:.2f}%</b> (Match: {conf_label})")
+                    out_lines.append(f"  P: {pq}")
+                    out_lines.append(f"  K: {kq}")
+                    out_lines.append(f"  Poly YES: {py:.3f} | Kalshi YES: {ky:.3f}\n")
+
+                keyboard = [
+                    [InlineKeyboardButton("🔄 Refresh", callback_data="refresh:xarb")],
+                    [InlineKeyboardButton("⬅️ Back", callback_data="menu:arbitrage")]
+                ]
+                await query.edit_message_text("\n".join(out_lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+            except Exception as exc:
+                await query.edit_message_text(f"<b>Error:</b> {exc}", parse_mode="HTML",
+                                             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="menu:arbitrage")]]))
 
 
 async def market_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
