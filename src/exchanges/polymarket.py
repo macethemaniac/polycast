@@ -155,3 +155,32 @@ def normalize_polymarket_market(m: Dict) -> Dict | None:
     except Exception as exc:
         logger.debug("Failed to normalize market: %s", exc)
         return None
+
+
+def fetch_polymarket_market_by_slug(slug: str) -> Dict | None:
+    """Fetch a single Polymarket market by its slug.
+
+    Returns normalized market dict or None.
+    """
+    if not slug:
+        return None
+
+    url = f"{BASE_URL}/markets"
+    try:
+        # Search for markets matching the exact slug
+        params = {"slug": slug, "limit": 1}
+        resp = requests.get(url, params=params, timeout=TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if isinstance(data, list) and len(data) > 0:
+            return normalize_polymarket_market(data[0])
+        elif isinstance(data, dict) and "markets" in data:
+            markets = data.get("markets", [])
+            if markets:
+                return normalize_polymarket_market(markets[0])
+
+        return None
+    except Exception as e:
+        logger.error(f"Failed to fetch market by slug '{slug}': {e}")
+        return None

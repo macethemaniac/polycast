@@ -23,6 +23,8 @@ from src.data.price_history import record_prices, get_price_change
 from src.data.news_gdelt import get_news_signal
 from src.ml.sentiment import score_texts
 from src.data.twitter_scraper import search_tweets_for_topic
+from src.utils.url_utils import extract_polymarket_slug
+from src.exchanges.polymarket import fetch_polymarket_market_by_slug
 
 
 def scan_arbitrage(
@@ -574,13 +576,23 @@ def scan_market_details(query: str) -> Tuple[Optional[Dict], Optional[str]]:
     import logging
     logger = logging.getLogger(__name__)
     try:
-        # Search for markets matching the query
-        results = search_markets(query, limit=1)
-        if not results:
-            return None, f"No markets found matching '{query}'"
+        # Check if query is a Polymarket URL
+        slug = extract_polymarket_slug(query)
+        if slug:
+            logger.info(f"scan_market_details: identified URL slug '{slug}'")
+            market = fetch_polymarket_market_by_slug(slug)
+            if not market:
+                return None, f"Could not fetch market for URL slug: {slug}"
+        else:
+            # Search for markets matching the keyword query
+            from src.engines.market_search import search_markets
+            results = search_markets(query, limit=1)
+            if not results:
+                return None, f"No markets found matching '{query}'"
+            market = results[0]
 
-        # Get full details for the top match
-        market = results[0]
+        # Get full details for the match
+        from src.engines.market_search import get_market_details
         details = get_market_details(market)
 
         return details, None
