@@ -211,20 +211,32 @@ def format_arbitrage_message(pair: str, prices: Dict[str, float], arbitrage_resu
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Enhanced welcome message with premium UI."""
     welcome_message = (
-        "<b>Welcome to PolyCAS Trading Assistant!</b>\n\n"
-        "Find high-confidence prediction market opportunities.\n\n"
-        "<b>Main Commands</b>\n"
-        "/discover [category] - Best opportunities\n"
-        "/market &lt;query/URL&gt; - Deep-dive analysis\n"
-        "/alert &lt;query&gt; &lt;price&gt; - Price alert\n"
-        "/alerts - Toggle notifications\n"
-        "/digest - Daily summary\n\n"
-        "<b>Categories</b>\n"
-        "politics | crypto | sports | entertainment\n\n"
-        "/help - Full help and examples"
+        "<b>💎 PolyCAST: Signal Intelligence</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "⚡ <i>High-Precision Prediction Market Intelligence</i>\n\n"
+        "Welcome to the next generation of market discovery. I scan thousands of "
+        "Polymarket opportunities to find high-confidence signals and trends.\n\n"
+        "<b>🎯 Core Capabilities</b>\n"
+        "• 🔍 <b>Smart Discovery</b>: Find hidden gems & anomalies\n"
+        "• 📰 <b>News Analysis</b>: Real-time sentiment & headlines\n"
+        "• ⚡ <b>Deep Dive</b>: Link or keyword market analysis\n\n"
+        "<i>Select an option below to begin your research:</i>"
     )
-    await update.message.reply_text(welcome_message, parse_mode="HTML")
+
+    keyboard = [
+        [
+            InlineKeyboardButton("🔍 Discover Now", callback_data="refresh:discover"),
+            InlineKeyboardButton("📊 Trending News", callback_data="refresh:trending")
+        ],
+        [
+            InlineKeyboardButton("📖 Help & Commands", callback_data="menu:help")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(welcome_message, parse_mode="HTML", reply_markup=reply_markup)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -602,6 +614,59 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         save_price_alerts(alerts)
 
         await query.answer(f"Alert set: YES price crosses ${target_price:.2f}", show_alert=True)
+
+    elif action == "menu":
+        if payload == "help":
+            help_text = (
+                "<b>Help - PolyCAS Trading Assistant</b>\n\n"
+                "<b>Main Commands</b>\n"
+                "- <code>/discover [category]</code> - Find best opportunities (fast)\n"
+                "- <code>/trending</code> - Markets with active news signals (slower)\n"
+                "- <code>/market &lt;query/URL&gt;</code> - Deep-dive into any market or link\n"
+                "- <code>/alerts</code> - Manage notifications (on/off)\n"
+                "- <code>/alert &lt;query&gt; &lt;price&gt;</code> - Set price alert\n"
+                "- <code>/digest [on/off] [hour] [timezone]</code> - Daily summary\n\n"
+                "<b>Categories for /discover</b>\n"
+                "politics, crypto, sports, entertainment, all (default)\n\n"
+                "<b>Quick Scans</b>\n"
+                "- <code>/scan [pair]</code> - Spot crypto arbitrage\n"
+                "- <code>/polyarb</code> - YES/NO mispricing\n"
+                "- <code>/xarb</code> - Cross-market mismatches\n\n"
+                "<b>Examples</b>\n"
+                "<code>/discover</code> - All categories\n"
+                "<code>/market bitcoin</code> - Search for Bitcoin\n"
+                "<code>/market https://polymarket.com/event/slug</code> - Analysis by link\n"
+            )
+            keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:start")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(help_text, parse_mode="HTML", reply_markup=reply_markup)
+
+        elif payload == "start":
+            # Re-generate the start message
+            welcome_message = (
+                "<b>💎 PolyCAST: Signal Intelligence</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "⚡ <i>High-Precision Prediction Market Intelligence</i>\n\n"
+                "Welcome to the next generation of market discovery. I scan thousands of "
+                "Polymarket opportunities to find high-confidence signals and trends.\n\n"
+                "<b>🎯 Core Capabilities</b>\n"
+                "• 🔍 <b>Smart Discovery</b>: Find hidden gems & anomalies\n"
+                "• 📰 <b>News Analysis</b>: Real-time sentiment & headlines\n"
+                "• ⚡ <b>Deep Dive</b>: Link or keyword market analysis\n\n"
+                "<i>Select an option below to begin your research:</i>"
+            )
+
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔍 Discover Now", callback_data="refresh:discover"),
+                    InlineKeyboardButton("📊 Trending News", callback_data="refresh:trending")
+                ],
+                [
+                    InlineKeyboardButton("📖 Help & Commands", callback_data="menu:help")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(welcome_message, parse_mode="HTML", reply_markup=reply_markup)
 
     elif action == "refresh":
         # Refresh discover results
