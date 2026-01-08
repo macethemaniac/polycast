@@ -167,7 +167,7 @@ def fetch_polymarket_market_by_slug(slug: str) -> Dict | None:
 
     url = f"{BASE_URL}/markets"
     try:
-        # Search for markets matching the exact slug
+        # 1. Try searching for market directly by slug
         params = {"slug": slug, "limit": 1}
         resp = requests.get(url, params=params, timeout=TIMEOUT)
         resp.raise_for_status()
@@ -179,6 +179,20 @@ def fetch_polymarket_market_by_slug(slug: str) -> Dict | None:
             markets = data.get("markets", [])
             if markets:
                 return normalize_polymarket_market(markets[0])
+
+        # 2. Fallback: Try searching for EVENT by slug
+        logger.info(f"Market slug '{slug}' not found in /markets, trying /events...")
+        url_events = f"{BASE_URL}/events"
+        resp_ev = requests.get(url_events, params={"slug": slug}, timeout=TIMEOUT)
+        resp_ev.raise_for_status()
+        ev_data = resp_ev.json()
+
+        if isinstance(ev_data, list) and len(ev_data) > 0:
+            event = ev_data[0]
+            event_markets = event.get("markets", [])
+            if event_markets:
+                # Return the first market in the event
+                return normalize_polymarket_market(event_markets[0])
 
         return None
     except Exception as e:
