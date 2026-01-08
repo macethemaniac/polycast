@@ -236,7 +236,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "- <code>/market &lt;query&gt;</code> - Deep-dive into any market\n"
         "- <code>/alerts</code> - Manage notifications (on/off)\n"
         "- <code>/alert &lt;query&gt; &lt;price&gt;</code> - Set price alert\n"
-        "- <code>/digest</code> - Daily summary (on/off)\n\n"
+        "- <code>/digest [on/off] [hour] [timezone]</code> - Daily summary\n\n"
         "<b>Categories for /discover</b>\n"
         "politics, crypto, sports, entertainment, all (default)\n\n"
         "<b>Quick Scans</b>\n"
@@ -248,11 +248,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<code>/discover crypto</code> - Crypto only\n"
         "<code>/trending</code> - News-driven markets\n"
         "<code>/market bitcoin</code> - Search for Bitcoin\n"
-        "<code>/market politics</code> - Browse politics markets\n"
-        "<code>/alert trump 0.60</code> - Price alert\n"
-        "<code>/digest on</code> - Daily summary at 9 AM UTC\n\n"
-        "<b>Categories</b>\n"
-        "politics, crypto, sports, entertainment, tech, economy, world, climate"
+        "<code>/alert trump 0.60</code> - Price alert\n\n"
+        "<b>Digest Examples</b>\n"
+        "<code>/digest on</code> - 9 AM UTC (default)\n"
+        "<code>/digest on 9 America/New_York</code> - 9 AM Eastern\n"
+        "<code>/digest on 8 Europe/London</code> - 8 AM London\n"
+        "<code>/digest off</code> - Disable\n\n"
+        "<b>Timezones</b>\n"
+        "EST, PST, GMT, CET, JST or full names like America/New_York"
     )
     await update.message.reply_text(help_message, parse_mode="HTML")
 
@@ -1246,8 +1249,14 @@ async def alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Enable/disable daily digest.
-    Usage: /digest on|off
+    """Enable/disable daily digest with timezone support.
+    Usage:
+      /digest on [hour] [timezone]
+      /digest off
+    Examples:
+      /digest on 9 America/New_York  (9 AM Eastern)
+      /digest on 8 Europe/London     (8 AM London)
+      /digest on 19 Asia/Tokyo       (7 PM Tokyo)
     """
     chat_id = str(update.effective_chat.id)
 
@@ -1255,8 +1264,21 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         settings = load_digest_settings()
         user_settings = settings.get(chat_id, {})
         enabled = user_settings.get("enabled", False)
-        msg = "Daily digest is ENABLED." if enabled else "Daily digest is DISABLED."
-        msg += "\n\nUse <code>/digest on</code> or <code>/digest off</code>"
+        hour = user_settings.get("hour", 9)
+        tz = user_settings.get("timezone", "UTC")
+
+        if enabled:
+            msg = f"📬 Daily digest is <b>ENABLED</b>\n"
+            msg += f"⏰ Time: {hour}:00 ({tz})\n\n"
+        else:
+            msg = "📭 Daily digest is <b>DISABLED</b>\n\n"
+
+        msg += "Commands:\n"
+        msg += "<code>/digest on</code> - Enable (9 AM UTC)\n"
+        msg += "<code>/digest on 9 America/New_York</code> - 9 AM Eastern\n"
+        msg += "<code>/digest on 8 Europe/London</code> - 8 AM London\n"
+        msg += "<code>/digest on 19 Asia/Tokyo</code> - 7 PM Tokyo\n"
+        msg += "<code>/digest off</code> - Disable"
         await update.message.reply_text(msg, parse_mode="HTML")
         return
 
@@ -1264,18 +1286,73 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     settings = load_digest_settings()
 
     if cmd in ("on", "enable"):
-        settings[chat_id] = {"enabled": True, "hour": 9}  # 9 AM UTC
+        # Parse optional hour and timezone
+        hour = 9  # Default 9 AM
+        timezone_str = "UTC"  # Default UTC
+
+        if len(context.args) >= 2:
+            try:
+                hour = int(context.args[1])
+                if hour < 0 or hour > 23:
+                    await update.message.reply_text("Hour must be 0-23")
+                    return
+            except ValueError:
+                # Maybe they passed timezone as second arg
+                timezone_str = context.args[1]
+
+        if len(context.args) >= 3:
+            timezone_str = context.args[2]
+
+        # Validate timezone
+        try:
+            from zoneinfo import ZoneInfo
+            ZoneInfo(timezone_str)  # Test if valid
+        except Exception:
+            # Try common abbreviations
+            tz_aliases = {
+                "est": "America/New_York", "edt": "America/New_York",
+                "cst": "America/Chicago", "cdt": "America/Chicago",
+                "mst": "America/Denver", "mdt": "America/Denver",
+                "pst": "America/Los_Angeles", "pdt": "America/Los_Angeles",
+                "gmt": "Europe/London", "bst": "Europe/London",
+                "cet": "Europe/Paris", "cest": "Europe/Paris",
+                "jst": "Asia/Tokyo", "ist": "Asia/Kolkata",
+                "aest": "Australia/Sydney", "aedt": "Australia/Sydney",
+            }
+            if timezone_str.lower() in tz_aliases:
+                timezone_str = tz_aliases[timezone_str.lower()]
+            elif timezone_str.upper() == "UTC":
+                timezone_str = "UTC"
+            else:
+                await update.message.reply_text(
+                    f"Unknown timezone: {timezone_str}\n\n"
+                    "Examples: America/New_York, Europe/London, Asia/Tokyo\n"
+                    "Or use: EST, PST, GMT, CET, JST"
+                )
+                return
+
+        settings[chat_id] = {"enabled": True, "hour": hour, "timezone": timezone_str}
         save_digest_settings(settings)
-        await update.message.reply_text("Daily digest ENABLED. You'll receive top opportunities at 9 AM UTC.")
+        await update.message.reply_text(
+            f"📬 Daily digest <b>ENABLED</b>\n"
+            f"⏰ You'll receive top opportunities at {hour}:00 ({timezone_str})",
+            parse_mode="HTML"
+        )
         return
 
     if cmd in ("off", "disable"):
         settings[chat_id] = {"enabled": False}
         save_digest_settings(settings)
-        await update.message.reply_text("Daily digest DISABLED.")
+        await update.message.reply_text("📭 Daily digest <b>DISABLED</b>", parse_mode="HTML")
         return
 
-    await update.message.reply_text("Usage: /digest on|off")
+    await update.message.reply_text(
+        "Usage:\n"
+        "<code>/digest on [hour] [timezone]</code>\n"
+        "<code>/digest off</code>\n\n"
+        "Example: <code>/digest on 9 America/New_York</code>",
+        parse_mode="HTML"
+    )
 
 
 async def watch_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1629,24 +1706,35 @@ def main() -> None:
 
         jq.run_repeating(_price_alert_job, interval=300, first=60)
 
-        # Daily digest job (runs every hour, checks if it's digest time)
+        # Daily digest job (runs every hour, checks if it's digest time in user's timezone)
         async def _daily_digest_job(context: ContextTypes.DEFAULT_TYPE):
             try:
-                from datetime import datetime, timezone
-                now = datetime.now(timezone.utc)
-                current_hour = now.hour
+                from datetime import datetime, timezone as dt_timezone
+                from zoneinfo import ZoneInfo
+                now_utc = datetime.now(dt_timezone.utc)
 
                 settings = load_digest_settings()
                 for chat_id, user_settings in settings.items():
                     if not user_settings.get("enabled"):
                         continue
                     digest_hour = user_settings.get("hour", 9)
-                    if current_hour != digest_hour:
+                    user_tz_str = user_settings.get("timezone", "UTC")
+
+                    # Convert UTC to user's local time
+                    try:
+                        user_tz = ZoneInfo(user_tz_str)
+                        now_local = now_utc.astimezone(user_tz)
+                    except Exception:
+                        # Fallback to UTC if timezone invalid
+                        now_local = now_utc
+                    local_hour = now_local.hour
+
+                    if local_hour != digest_hour:
                         continue
 
-                    # Check if already sent today
+                    # Check if already sent today (in user's local time)
                     last_sent = user_settings.get("last_sent", "")
-                    today = now.strftime("%Y-%m-%d")
+                    today = now_local.strftime("%Y-%m-%d")
                     if last_sent == today:
                         continue
 
