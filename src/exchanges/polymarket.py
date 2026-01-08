@@ -15,12 +15,13 @@ TIMEOUT = 10
 logger = logging.getLogger(__name__)
 
 
-def fetch_polymarket_markets(limit: int = 100, use_pagination: bool = False) -> Dict:
+def fetch_polymarket_markets(limit: int = 100, use_pagination: bool = False, tag_id: str | None = None) -> Dict:
     """Fetch open Polymarket markets via the Gamma API.
 
     Args:
         limit: Max markets to fetch
         use_pagination: If True, fetch using multiple offsets for variety
+        tag_id: Optional tag ID to filter by (e.g., '964' for trending)
 
     Returns:
         List of market dicts from the API.
@@ -29,7 +30,9 @@ def fetch_polymarket_markets(limit: int = 100, use_pagination: bool = False) -> 
 
     if not use_pagination or limit <= 200:
         # Simple single request
-        params = {"closed": "false", "limit": min(limit, 200)}
+        params = {"closed": "false", "limit": min(limit, 200), "active": "true"}
+        if tag_id:
+            params["tag_id"] = tag_id
         resp = requests.get(url, params=params, timeout=TIMEOUT)
         resp.raise_for_status()
         return resp.json()
@@ -41,7 +44,9 @@ def fetch_polymarket_markets(limit: int = 100, use_pagination: bool = False) -> 
 
     for offset in range(0, limit, batch_size):
         try:
-            params = {"closed": "false", "limit": batch_size, "offset": offset}
+            params = {"closed": "false", "active": "true", "limit": batch_size, "offset": offset}
+            if tag_id:
+                params["tag_id"] = tag_id
             resp = requests.get(url, params=params, timeout=TIMEOUT)
             resp.raise_for_status()
             batch = resp.json()

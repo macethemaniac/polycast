@@ -17,9 +17,12 @@ from src.engines.cross_market_matcher import match_markets_by_embedding
 from src.engines.cross_arbitrage import detect_mismatches
 from src.engines.market_filter import filter_markets_by_freshness
 from src.engines.social_matcher import match_trends_to_markets, get_markets_by_social_relevance
-from src.engines.unified_scorer import score_markets, format_signals_text
+from src.engines.unified_scorer import score_markets, format_signals_text, compute_unified_score
 from src.engines.market_search import search_markets, get_market_details
 from src.data.price_history import record_prices, get_price_change
+from src.data.news_gdelt import get_news_signal
+from src.ml.sentiment import score_texts
+from src.data.twitter_scraper import search_tweets_for_topic
 
 
 def scan_arbitrage(
@@ -219,7 +222,13 @@ _SCORED_CACHE: Dict = {"results": [], "timestamp": 0}
 _CACHE_TTL = 30  # 30 seconds
 
 
-def scan_best_opportunities(limit: int = 600, top_n: int = 5, min_confidence: int = 30, use_cache: bool = True) -> List[Dict]:
+def scan_best_opportunities(
+    limit: int = 600,
+    top_n: int = 5,
+    min_confidence: int = 30,
+    use_cache: bool = True,
+    enrich_top_n: int = 15
+) -> List[Dict]:
     """
     Discover NEW opportunities from the full Polymarket catalog.
 
@@ -243,15 +252,30 @@ def scan_best_opportunities(limit: int = 600, top_n: int = 5, min_confidence: in
         return result
 
     try:
-        # Fetch LOTS of markets for true discovery
+        # 1. Fetch "main-trending" markets first (high priority)
+        trending_data = fetch_polymarket_markets(limit=100, tag_id="964")
+        trending_raw = trending_data if isinstance(trending_data, list) else trending_data.get("markets", [])
+        logger.info(f"scan_best_opportunities: fetched {len(trending_raw)} trending markets")
+
+        # 2. Fetch LOTS of other markets for discovery
         data = fetch_polymarket_markets(limit=limit, use_pagination=True)
-        markets = data if isinstance(data, list) else data.get("markets", data)
-        if not markets:
+        markets_raw = data if isinstance(data, list) else data.get("markets", [])
+        
+        # Merge, prioritizing trending
+        seen_ids = set()
+        merged_raw = []
+        for m in (trending_raw + markets_raw):
+            mid = m.get("id") or m.get("_id")
+            if mid and mid not in seen_ids:
+                seen_ids.add(mid)
+                merged_raw.append(m)
+
+        if not merged_raw:
             logger.warning("scan_best_opportunities: no markets found")
             return []
 
         normalized = []
-        for m in markets:
+        for m in merged_raw:
             norm = normalize_polymarket_market(m)
             if norm:
                 normalized.append(norm)
@@ -269,12 +293,43 @@ def scan_best_opportunities(limit: int = 600, top_n: int = 5, min_confidence: in
         )
         logger.info(f"scan_best_opportunities: {len(normalized)} after freshness filter")
 
-        # Score all markets
-        scored = score_markets(normalized, min_confidence=min_confidence, fast_mode=True)
-        logger.info(f"scan_best_opportunities: {len(scored)} markets above {min_confidence} confidence")
+        # 3. FAST STAGE: Score all markets without deep API calls
+        scored_fast = score_markets(normalized, min_confidence=min_confidence, fast_mode=True)
+        logger.info(f"scan_best_opportunities: {len(scored_fast)} markets above fast {min_confidence} confidence")
 
-        # Enrich with category
-        for m in scored:
+        # 4. DEEP STAGE: Enrich top N candidates with actual news and social signals
+        top_candidates = scored_fast[:enrich_top_n]
+        fully_scored = []
+        
+        for m in top_candidates:
+            try:
+                # Deep Enrichment: News headlines
+                news = get_news_signal(m.get("question", ""))
+                headlines = news.get("headlines", [])
+                
+                # Deep Enrichment: Social sentiment for top trend matches
+                sentiment = None
+                social_texts = []
+                for tm in m.get("trend_matches", []):
+                    tweets = search_tweets_for_topic(tm.get("topic", ""), limit=5)
+                    social_texts.extend([tw.get("text", "") for tw in tweets])
+                
+                if social_texts:
+                    sentiment = score_texts(social_texts)
+                
+                # Re-score with deep signals
+                deep_result = compute_unified_score(m, sentiment=sentiment, headlines=headlines)
+                fully_scored.append(deep_result)
+            except Exception as e:
+                logger.error(f"Deep enrichment failed for market {m.get('market_id')}: {e}")
+                fully_scored.append(m) # Fallback to fast-scored version
+
+        # Combined results: Enriched + remaining fast-scored
+        remaining = scored_fast[len(top_candidates):]
+        final_pool = fully_scored + remaining
+        
+        # Enrich with category and history
+        for m in final_pool:
             market_id = m.get("market_id", "")
             if market_id:
                 price_data = get_price_change(market_id)
@@ -287,7 +342,7 @@ def scan_best_opportunities(limit: int = 600, top_n: int = 5, min_confidence: in
 
         # Group by category
         by_category = defaultdict(list)
-        for m in scored:
+        for m in final_pool:
             by_category[m["detected_category"]].append(m)
 
         # Shuffle within each category for variety
@@ -301,9 +356,24 @@ def scan_best_opportunities(limit: int = 600, top_n: int = 5, min_confidence: in
 
         # Round-robin pick ensuring max 2 per category in top results
         cat_counts = defaultdict(int)
-        max_per_cat = 2  # Max 2 from any single category in top_n
+        
+        # Multiple passes to fill results, ensuring priority to fully scored (enriched) ones
+        # First, try to pick enriched markets in round-robin
+        enriched_by_cat = defaultdict(list)
+        for m in fully_scored:
+            enriched_by_cat[m["detected_category"]].append(m)
+            
+        for pass_num in range(3):
+            for cat in categories:
+                if len(results) >= top_n:
+                    break
+                cat_enriched = enriched_by_cat[cat]
+                if pass_num < len(cat_enriched):
+                    m = cat_enriched[pass_num]
+                    if m not in results:
+                        results.append(m)
 
-        # Multiple passes to fill results
+        # Fill remaining with any markets
         for pass_num in range(5):
             for cat in categories:
                 if len(results) >= top_n * 4:

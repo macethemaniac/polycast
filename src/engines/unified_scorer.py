@@ -192,11 +192,13 @@ def determine_action(yes_price: float, no_price: float, ev: float, confidence: f
     return "WATCH", "[~]"
 
 
-def compute_unified_score(market: Dict) -> Dict:
+def compute_unified_score(market: Dict, sentiment: float | None = None, headlines: List[str] | None = None) -> Dict:
     """Compute unified confidence score combining all signals.
 
     Args:
         market: Normalized market dict with prices, volume, etc.
+        sentiment: Optional pre-computed sentiment score.
+        headlines: Optional pre-fetched news headlines.
 
     Returns:
         Dict with:
@@ -218,13 +220,17 @@ def compute_unified_score(market: Dict) -> Dict:
     social_boost = float(market.get("social_boost", 0.0) or 0.0)
     trend_matches = market.get("trend_matches", [])
 
-    # Get news signal
-    news = get_news_signal(question)
-    news_mentions = int(news.get("mentions_24h", 0) or 0)
-    headlines = news.get("headlines", [])
+    # Get news signal if not provided
+    if not headlines:
+        news = get_news_signal(question)
+        news_mentions = int(news.get("mentions_24h", 0) or 0)
+        headlines = news.get("headlines", [])
+    else:
+        news_mentions = len(headlines)
 
-    # Get sentiment
-    sentiment = score_texts([question] + headlines)
+    # Get sentiment if not provided
+    if sentiment is None:
+        sentiment = score_texts([question] + headlines)
 
     # Compute component scores
     ev, ev_score = compute_ev_score(yes_price, no_price, sentiment, news_mentions)

@@ -380,9 +380,21 @@ async def discover_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 else:
                     change_str = f" | 24h: {pct:.1f}%"
 
+            # Format news and sentiment
+            news_mentions = r.get("news_mentions", 0)
+            sentiment = r.get("sentiment", 0.0)
+            sent_str = ""
+            if news_mentions > 0:
+                if sentiment > 0.2:
+                    sent_str = " | 📈 Positive News"
+                elif sentiment < -0.2:
+                    sent_str = " | 📉 Negative News"
+                else:
+                    sent_str = f" | 📰 {news_mentions} mentions"
+
             out_lines.append(f"\n<b>#{i} {action_icon} {conf_label} {action}</b> ({confidence:.0f}/100)")
             out_lines.append(f"<b>Q:</b> {q}")
-            out_lines.append(f"YES ${yes:.2f} | NO ${no:.2f} | Vol: {vol_str}{change_str}")
+            out_lines.append(f"YES ${yes:.2f} | NO ${no:.2f} | Vol: {vol_str}{change_str}{sent_str}")
             if signal_text:
                 out_lines.append(f"<i>Signals: {signal_text}</i>")
 
@@ -651,9 +663,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     else:
                         change_str = f" | 24h: {pct:.1f}%"
 
+                # Format news and sentiment
+                news_mentions = r.get("news_mentions", 0)
+                sentiment = r.get("sentiment", 0.0)
+                sent_str = ""
+                if news_mentions > 0:
+                    if sentiment > 0.2:
+                        sent_str = " | 📈 Positive News"
+                    elif sentiment < -0.2:
+                        sent_str = " | 📉 Negative News"
+                    else:
+                        sent_str = f" | 📰 {news_mentions} mentions"
+
                 out_lines.append(f"\n<b>#{i} {action_icon} {conf_label} {action_str}</b> ({confidence:.0f}/100)")
                 out_lines.append(f"<b>Q:</b> {q}")
-                out_lines.append(f"YES ${yes:.2f} | NO ${no:.2f} | Vol: {vol_str}{change_str}")
+                out_lines.append(f"YES ${yes:.2f} | NO ${no:.2f} | Vol: {vol_str}{change_str}{sent_str}")
                 if signal_text:
                     out_lines.append(f"<i>Signals: {signal_text}</i>")
 
