@@ -15,16 +15,55 @@ TIMEOUT = 10
 logger = logging.getLogger(__name__)
 
 
-def fetch_polymarket_markets(limit: int = 100) -> Dict:
+def fetch_polymarket_markets(limit: int = 100, use_pagination: bool = False) -> Dict:
     """Fetch open Polymarket markets via the Gamma API.
 
-    Returns the raw JSON dict from the API.
+    Args:
+        limit: Max markets to fetch
+        use_pagination: If True, fetch using multiple offsets for variety
+
+    Returns:
+        List of market dicts from the API.
     """
-    params = {"closed": "false", "limit": limit}
     url = f"{BASE_URL}/markets"
-    resp = requests.get(url, params=params, timeout=TIMEOUT)
-    resp.raise_for_status()
-    return resp.json()
+
+    if not use_pagination or limit <= 200:
+        # Simple single request
+        params = {"closed": "false", "limit": min(limit, 200)}
+        resp = requests.get(url, params=params, timeout=TIMEOUT)
+        resp.raise_for_status()
+        return resp.json()
+
+    # Pagination mode: fetch from multiple offsets for variety
+    all_markets = []
+    seen_ids = set()
+    batch_size = 200
+
+    for offset in range(0, limit, batch_size):
+        try:
+            params = {"closed": "false", "limit": batch_size, "offset": offset}
+            resp = requests.get(url, params=params, timeout=TIMEOUT)
+            resp.raise_for_status()
+            batch = resp.json()
+
+            if not batch:
+                break
+
+            for m in batch:
+                mid = m.get("id") or m.get("_id")
+                if mid and mid not in seen_ids:
+                    seen_ids.add(mid)
+                    all_markets.append(m)
+
+            if len(batch) < batch_size:
+                break  # No more markets
+
+        except Exception as e:
+            logger.warning(f"Pagination fetch failed at offset {offset}: {e}")
+            break
+
+    logger.info(f"fetch_polymarket_markets: got {len(all_markets)} unique markets")
+    return all_markets
 
 
 def normalize_polymarket_market(m: Dict) -> Dict | None:

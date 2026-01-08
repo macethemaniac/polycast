@@ -356,19 +356,21 @@ def _detect_category(question: str) -> str:
     return "other"
 
 
-def scan_trending_news(limit: int = 300, top_n: int = 10) -> List[Dict]:
+def scan_trending_news(limit: int = 600, top_n: int = 10) -> List[Dict]:
     """
     Find hot/trending markets with CATEGORY DIVERSITY.
 
     Uses actual 24h volume and price movement data from Polymarket.
     Ensures results include different categories (sports, politics, crypto, etc.)
+    Fetches with pagination to get variety beyond just sports markets.
     """
     import logging
     logger = logging.getLogger(__name__)
 
     try:
-        data = fetch_polymarket_markets(limit=limit)
-        markets = data.get("markets") if isinstance(data, dict) else data
+        # Use pagination to get more variety (not just recent sports)
+        data = fetch_polymarket_markets(limit=limit, use_pagination=True)
+        markets = data if isinstance(data, list) else data.get("markets", data)
         if not markets:
             logger.warning("scan_trending_news: no markets found")
             return []
@@ -380,12 +382,12 @@ def scan_trending_news(limit: int = 300, top_n: int = 10) -> List[Dict]:
                 normalized.append(norm)
         logger.info(f"scan_trending_news: normalized {len(normalized)} markets")
 
-        # Apply freshness filter
+        # Apply RELAXED freshness filter for maximum variety
         normalized = filter_markets_by_freshness(
             normalized,
-            min_days_until_close=1.0,
-            max_days_until_close=90.0,
-            min_volume=500.0,  # Lower threshold for more variety
+            min_days_until_close=0.5,    # Allow markets closing soon
+            max_days_until_close=365.0,  # Allow longer-term markets
+            min_volume=100.0,            # Low threshold for variety
         )
         logger.info(f"scan_trending_news: {len(normalized)} after freshness filter")
 
@@ -410,36 +412,43 @@ def scan_trending_news(limit: int = 300, top_n: int = 10) -> List[Dict]:
             else:
                 m["trend_direction"] = "➡️"
 
-        # Group by category and get top from each
+        # Group ALL markets by category (not just those with 24h volume)
         from collections import defaultdict
         by_category = defaultdict(list)
         for m in normalized:
-            if m.get("volume_24h", 0) > 500:  # Low threshold for diversity
-                by_category[m["detected_category"]].append(m)
+            by_category[m["detected_category"]].append(m)
 
-        # Sort each category by trending score
+        # Sort each category - prefer 24h activity, fallback to total volume
         for cat in by_category:
-            by_category[cat].sort(key=lambda x: x.get("trending_score", 0), reverse=True)
+            by_category[cat].sort(
+                key=lambda x: (x.get("trending_score", 0), x.get("volume", 0)),
+                reverse=True
+            )
 
-        logger.info(f"Categories found: {list(by_category.keys())}")
+        logger.info(f"Categories found: {list(by_category.keys())} with counts: {[(c, len(by_category[c])) for c in by_category]}")
 
         # Round-robin pick - ONE from each category first, then fill with highest scores
         results = []
-        categories = list(by_category.keys())
 
         # Prioritize non-sports categories first for diversity
         priority_order = ["world", "politics", "crypto", "tech", "economy", "climate", "entertainment", "other", "sports"]
-        categories.sort(key=lambda c: priority_order.index(c) if c in priority_order else 99)
+        categories = sorted(by_category.keys(), key=lambda c: priority_order.index(c) if c in priority_order else 99)
 
-        # Phase 1: Get top 1 from each category
+        # Phase 1: Get top 1 from each category (ensures diversity)
         for cat in categories:
             if by_category[cat]:
                 results.append(by_category[cat][0])
 
-        # Phase 2: Fill remaining slots with highest trending scores across all categories
+        # Phase 2: Get second best from non-sports categories
+        for cat in categories:
+            if cat != "sports" and len(by_category[cat]) > 1:
+                results.append(by_category[cat][1])
+
+        # Phase 3: Fill remaining with highest trending scores (any category)
         all_remaining = []
         for cat in categories:
-            all_remaining.extend(by_category[cat][1:])  # Skip first (already added)
+            start_idx = 2 if cat != "sports" else 1
+            all_remaining.extend(by_category[cat][start_idx:])
         all_remaining.sort(key=lambda x: x.get("trending_score", 0), reverse=True)
 
         for m in all_remaining:
