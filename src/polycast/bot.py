@@ -240,35 +240,28 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Standardized help menu with structured categories."""
     help_message = (
-        "<b>Help - PolyCAS Trading Assistant</b>\n\n"
-        "<b>Main Commands</b>\n"
-        "- <code>/discover [category]</code> - Find best opportunities (fast)\n"
-        "- <code>/trending</code> - Markets with active news signals (slower)\n"
-        "- <code>/market &lt;query/URL&gt;</code> - Deep-dive into any market or link\n"
-        "- <code>/alerts</code> - Manage notifications (on/off)\n"
-        "- <code>/alert &lt;query&gt; &lt;price&gt;</code> - Set price alert\n"
-        "- <code>/digest [on/off] [hour] [timezone]</code> - Daily summary\n\n"
-        "<b>Categories for /discover</b>\n"
-        "politics, crypto, sports, entertainment, all (default)\n\n"
-        "<b>Quick Scans</b>\n"
-        "- <code>/scan [pair]</code> - Spot crypto arbitrage\n"
-        "- <code>/polyarb</code> - YES/NO mispricing\n"
-        "- <code>/xarb</code> - Cross-market mismatches\n\n"
-        "<b>Examples</b>\n"
-        "<code>/discover</code> - All categories\n"
-        "<code>/discover crypto</code> - Crypto only\n"
-        "<code>/trending</code> - News-driven markets\n"
-        "<code>/market bitcoin</code> - Search for Bitcoin\n"
-        "<code>/market https://polymarket.com/event/slug</code> - Analysis by link\n"
-        "<code>/alert trump 0.60</code> - Price alert\n\n"
-        "<b>Digest Examples</b>\n"
-        "<code>/digest on</code> - 9 AM UTC (default)\n"
-        "<code>/digest on 9 America/New_York</code> - 9 AM Eastern\n"
-        "<code>/digest on 8 Europe/London</code> - 8 AM London\n"
-        "<code>/digest off</code> - Disable\n\n"
-        "<b>Timezones</b>\n"
-        "EST, PST, GMT, CET, JST or full names like America/New_York"
+        "<b>📖 PolyCAST: Help Center</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "⚡ <i>Prediction Market Intelligence Command Reference</i>\n\n"
+        "<b>🔍 Market Discovery</b>\n"
+        "• <code>/discover [category]</code> - High-confidence signals\n"
+        "• <code>/trending</code> - Markets with active news buzz\n"
+        "• <code>/market &lt;query/URL&gt;</code> - Deep-dive link or keyword\n\n"
+        "<b>🔔 Personalized Monitoring</b>\n"
+        "• <code>/alert &lt;query&gt; &lt;price&gt;</code> - Set price movement alert\n"
+        "• <code>/alerts</code> - Toggle all background notifications\n"
+        "• <code>/digest [on/off]</code> - Daily top opportunity summary\n\n"
+        "<b>⚔️ Arbitrage Scanners</b>\n"
+        "• <code>/scan [pair]</code> - Spot crypto arbitrage (e.g., BTC/USDT)\n"
+        "• <code>/polyarb</code> - YES/NO mispricing on Polymarket\n"
+        "• <code>/xarb</code> - Cross-market mismatches (Poly vs Kalshi)\n\n"
+        "<b>💡 Examples</b>\n"
+        "• <code>/discover crypto</code>\n"
+        "• <code>/market &lt;url&gt;</code>\n"
+        "• <code>/alert trump 0.60</code>\n\n"
+        "<i>Use /start to return to the interactive dashboard.</i>"
     )
     await update.message.reply_text(help_message, parse_mode="HTML")
 
@@ -925,24 +918,28 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         else:
             spot_message = format_arbitrage_message(pair, arbitrage_result["prices"], arbitrage_result)
 
-        cross_lines = ["<b>Cross-market Arbitrage (Polymarket &lt;-&gt; Kalshi)</b>\n"]
+        cross_lines = [
+            "<b>🔄 CROSS-MARKET SCAN</b>",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            "<i>Polymarket vs Kalshi Detection</i>\n"
+        ]
         try:
             cross_results = find_cross_market_arbitrage(limit_pol=100, limit_kal=100, min_similarity=min_similarity)
             if not cross_results:
-                cross_lines.append("No cross-market arbitrage found right now.")
+                cross_lines.append("<i>No cross-market mismatches detected.</i>")
             else:
                 for r in cross_results[:5]:
                     cross_lines.append(
-                        f"Type: {r['type']}\n"
-                        f"Polymarket: {r['pol_question']}\n"
-                        f"Kalshi: {r['kal_question']}\n"
-                        f"Total: {r['total']:.2f} Profit: {r['profit_pct']:.2f}%\n"
+                        f"• <b>{r['type']}</b> (Score: {r.get('score', 0):.1f})\n"
+                        f"  P: {r['pol_question'][:60]}...\n"
+                        f"  K: {r['kal_question'][:60]}...\n"
+                        f"  Profit: <b>{r['profit_pct']:.2f}%</b> | Net: {r['total']:.2f}\n"
                     )
         except Exception as exc:
-            cross_lines.append(f"<b>Cross-market error:</b> {exc}")
+            cross_lines.append(f"<b>⚠️ Cross-market error:</b> {exc}")
             logger.error("Error in scan_command (crossarb): %s", exc, exc_info=True)
 
-        message = "\n\n".join([spot_message, "\n".join(cross_lines)])
+        message = spot_message + "\n\n" + "\n".join(cross_lines)
         await processing_msg.edit_text(message, parse_mode="HTML")
 
     except Exception as exc:
@@ -1004,20 +1001,25 @@ async def polyarb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         def _esc(text: str) -> str:
             return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-        out_lines = ["<b>Polymarket Arbitrage</b> (top 5)\n"]
+        out_lines = [
+            "<b>💎 Y/N MISPRICING SCAN</b>",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            "<i>Detected Polymarket Arbitrage</i>\n"
+        ]
         for r in results[:5]:
             q = _esc(r.get("question", ""))
-            if len(q) > 120:
-                q = q[:120] + "..."
+            if len(q) > 100:
+                q = q[:100] + "..."
             yes = r.get("yes_price", 0.0)
             no = r.get("no_price", 0.0)
             total = r.get("total", 0.0)
             profit = r.get("profit_pct", 0.0)
             vol = r.get("volume", 0.0)
-            out_lines.append(
-                f"{q}\n"
-                f"YES: {yes:.3f}  NO: {no:.3f}  TOTAL: {total:.3f}  Profit: {profit:.2f}%  Volume: {vol:.0f}\n"
-            )
+            
+            out_lines.append(f"• <b>{q}</b>")
+            out_lines.append(f"  YES: {yes:.3f} | NO: {no:.3f} | <b>Profit: {profit:.2f}%</b>")
+            out_lines.append(f"  Total: {total:.3f} | Vol: ${vol/1000:.1f}K\n")
+            
         await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
     except Exception as exc:
         await processing_msg.edit_text(f"<b>Error:</b> {exc}", parse_mode="HTML")
@@ -1044,31 +1046,28 @@ async def xarb_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         def _esc(text: str) -> str:
             return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-        out_lines = ["<b>Cross-market Mismatches</b>\n<i>Warning: different settlement rules; this is not risk-free.</i>\n"]
+        out_lines = [
+            "<b>🔄 CROSS-MARKET MISMATCHES</b>",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            "<i>Polymarket vs Kalshi Comparison</i>\n",
+            "⚠️ <i>Warning: different settlement rules apply.</i>\n"
+        ]
         for r in results:
             pq = _esc(r.get("question_poly", ""))
             kq = _esc(r.get("question_kalshi", ""))
-            if len(pq) > 120:
-                pq = pq[:120] + "..."
-            if len(kq) > 120:
-                kq = kq[:120] + "..."
-            sim = r.get("similarity", 0.0)
+            if len(pq) > 100: pq = pq[:100] + "..."
+            if len(kq) > 100: kq = kq[:100] + "..."
+            
             edge = r.get("edge_pct", 0.0)
             py = r.get("poly_yes", 0.0)
             ky = r.get("kalshi_yes", 0.0)
-            pv = r.get("poly_volume", 0.0)
-            kv = r.get("kalshi_volume", 0.0)
-            conf = r.get("confidence", 0.0)
             conf_label = r.get("confidence_label", "LOW")
-            settle_sim = r.get("settlement_sim", 0.0)
-            out_lines.append(
-                f"Sim: {sim:.2f}  Settle: {settle_sim:.2f}  Edge: {edge:.2f}%\n"
-                f"Conf: {conf:.1f} ({conf_label})\n"
-                f"Poly YES: {py:.3f}  Kalshi YES: {ky:.3f}\n"
-                f"Poly Vol: {pv:.0f}  Kalshi Vol: {kv:.0f}\n"
-                f"P: {pq}\n"
-                f"K: {kq}\n"
-            )
+            
+            out_lines.append(f"• <b>Edge: {edge:.2f}%</b> (Match: {conf_label})")
+            out_lines.append(f"  P: {pq}")
+            out_lines.append(f"  K: {kq}")
+            out_lines.append(f"  Poly YES: {py:.3f} | Kalshi YES: {ky:.3f}\n")
+
         sent = await processing_msg.edit_text("\n".join(out_lines), parse_mode="HTML")
         try:
             enriched = log_opportunities("xarb", results)
@@ -1124,13 +1123,18 @@ async def watch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not pm and not kal:
         await update.message.reply_text("Watchlist is empty.", parse_mode="HTML")
         return
-    lines = ["<b>Watchlist</b>"]
+    lines = [
+        "<b>🔭 ACTIVE WATCHLIST</b>",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "<i>Monitored Markets for Arbitrage</i>\n"
+    ]
     if pm:
-        lines.append("Polymarket:")
-        lines.append(", ".join(pm))
+        lines.append("<b>🔹 Polymarket:</b>")
+        lines.append(f"• " + ", ".join(pm[:10]) + ("..." if len(pm) > 10 else ""))
     if kal:
-        lines.append("Kalshi:")
-        lines.append(", ".join(kal))
+        lines.append("\n<b>🔹 Kalshi:</b>")
+        lines.append(f"• " + ", ".join(kal[:10]) + ("..." if len(kal) > 10 else ""))
+    
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
@@ -1234,25 +1238,31 @@ async def alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if not context.args:
         enabled = bool(enabled_chats.get(chat_id, False))
-        msg = "Alerts are ENABLED for this chat." if enabled else "Alerts are DISABLED for this chat."
-        await update.message.reply_text(msg)
+        status = "<b>✅ ENABLED</b>" if enabled else "<b>❌ DISABLED</b>"
+        msg = (
+            "<b>🔔 NOTIFICATION SETTINGS</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Scheduled alerts are currently: {status}\n\n"
+            "<i>Use /alerts on|off to toggle notifications.</i>"
+        )
+        await update.message.reply_text(msg, parse_mode="HTML")
         return
 
     cmd = context.args[0].lower()
     if cmd in ("enable", "on"):
         enabled_chats[chat_id] = True
         enabled_file.write_text(json.dumps(enabled_chats), encoding="utf-8")
-        await update.message.reply_text("Alerts enabled for this chat.")
+        await update.message.reply_text("<b>✅ Alerts ENABLED</b> for this chat.", parse_mode="HTML")
         return
     if cmd in ("disable", "off"):
         enabled_chats[chat_id] = False
         enabled_file.write_text(json.dumps(enabled_chats), encoding="utf-8")
-        await update.message.reply_text("Alerts disabled for this chat.")
+        await update.message.reply_text("<b>❌ Alerts DISABLED</b> for this chat.", parse_mode="HTML")
         return
     if cmd == "status":
         enabled = bool(enabled_chats.get(chat_id, False))
-        msg = "Alerts are ENABLED for this chat." if enabled else "Alerts are DISABLED for this chat."
-        await update.message.reply_text(msg)
+        status = "<b>✅ ENABLED</b>" if enabled else "<b>❌ DISABLED</b>"
+        await update.message.reply_text(f"Scheduled alerts: {status}", parse_mode="HTML")
         return
     await update.message.reply_text("Usage: /alerts enable|disable|status")
 
@@ -1331,9 +1341,11 @@ async def alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     save_price_alerts(alerts)
 
     await update.message.reply_text(
-        f"Price alert set:\n"
-        f"<b>{query}</b> → ${target_price:.2f}\n\n"
-        f"You'll be notified when YES price crosses this level.",
+        f"<b>🎯 PRICE ALERT SET</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>Market:</b> {query}\n"
+        f"<b>Target:</b> YES crosses ${target_price:.2f}\n\n"
+        f"<i>You will receive a notification immediately upon cross.</i>",
         parse_mode="HTML"
     )
 
@@ -1424,8 +1436,10 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         settings[chat_id] = {"enabled": True, "hour": hour, "timezone": timezone_str}
         save_digest_settings(settings)
         await update.message.reply_text(
-            f"📬 Daily digest <b>ENABLED</b>\n"
-            f"⏰ You'll receive top opportunities at {hour}:00 ({timezone_str})",
+            f"<b>📬 DAILY DIGEST ENABLED</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⏰ <b>Scheduled:</b> {hour}:00 ({timezone_str})\n"
+            f"💎 <i>You'll receive the top 5 high-confidence picks daily.</i>",
             parse_mode="HTML"
         )
         return
@@ -1433,7 +1447,12 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if cmd in ("off", "disable"):
         settings[chat_id] = {"enabled": False}
         save_digest_settings(settings)
-        await update.message.reply_text("📭 Daily digest <b>DISABLED</b>", parse_mode="HTML")
+        await update.message.reply_text(
+            "<b>📭 DAILY DIGEST DISABLED</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<i>Notifications turned off for this chat.</i>", 
+            parse_mode="HTML"
+        )
         return
 
     await update.message.reply_text(
