@@ -10,6 +10,8 @@ from typing import Dict, List
 
 import requests
 
+from src.utils.rate_limiter import get_with_retry, RateLimitError, check_rate_limit_cooldown
+
 BASE_URL = "https://gamma-api.polymarket.com"
 TIMEOUT = 10
 logger = logging.getLogger(__name__)
@@ -28,47 +30,87 @@ def fetch_polymarket_markets(limit: int = 100, use_pagination: bool = False, tag
     """
     url = f"{BASE_URL}/markets"
 
-    if not use_pagination or limit <= 200:
-        # Simple single request
-        params = {"closed": "false", "limit": min(limit, 200), "active": "true"}
-        if tag_id:
-            params["tag_id"] = tag_id
-        resp = requests.get(url, params=params, timeout=TIMEOUT)
-        resp.raise_for_status()
-        return resp.json()
+    # Check if we're rate limited
+    domain = "gamma-api.polymarket.com"
+    cooldown = check_rate_limit_cooldown(domain)
+    if cooldown and cooldown > 5:
+        logger.warning(f"Polymarket rate limited, {cooldown:.0f}s remaining. Trying DFlow fallback...")
+        return _fetch_from_dflow_fallback(limit)
 
-    # Pagination mode: fetch from multiple offsets for variety
-    all_markets = []
-    seen_ids = set()
-    batch_size = 200
-
-    for offset in range(0, limit, batch_size):
-        try:
-            params = {"closed": "false", "active": "true", "limit": batch_size, "offset": offset}
+    try:
+        if not use_pagination or limit <= 200:
+            # Simple single request
+            params = {"closed": "false", "limit": min(limit, 200), "active": "true"}
             if tag_id:
                 params["tag_id"] = tag_id
-            resp = requests.get(url, params=params, timeout=TIMEOUT)
+            resp = get_with_retry(url, params=params, timeout=TIMEOUT, max_retries=2)
             resp.raise_for_status()
-            batch = resp.json()
+            return resp.json()
 
-            if not batch:
+        # Pagination mode: fetch from multiple offsets for variety
+        all_markets = []
+        seen_ids = set()
+        batch_size = 200
+
+        for offset in range(0, limit, batch_size):
+            try:
+                params = {"closed": "false", "active": "true", "limit": batch_size, "offset": offset}
+                if tag_id:
+                    params["tag_id"] = tag_id
+                resp = get_with_retry(url, params=params, timeout=TIMEOUT, max_retries=2)
+                resp.raise_for_status()
+                batch = resp.json()
+
+                if not batch:
+                    break
+
+                for m in batch:
+                    mid = m.get("id") or m.get("_id")
+                    if mid and mid not in seen_ids:
+                        seen_ids.add(mid)
+                        all_markets.append(m)
+
+                if len(batch) < batch_size:
+                    break  # No more markets
+
+            except RateLimitError as e:
+                logger.warning(f"Rate limited at offset {offset}: {e}")
+                break
+            except Exception as e:
+                logger.warning(f"Pagination fetch failed at offset {offset}: {e}")
                 break
 
-            for m in batch:
-                mid = m.get("id") or m.get("_id")
-                if mid and mid not in seen_ids:
-                    seen_ids.add(mid)
-                    all_markets.append(m)
+        logger.info(f"fetch_polymarket_markets: got {len(all_markets)} unique markets")
+        return all_markets
 
-            if len(batch) < batch_size:
-                break  # No more markets
+    except RateLimitError as e:
+        logger.warning(f"Polymarket rate limited: {e}. Trying DFlow fallback...")
+        return _fetch_from_dflow_fallback(limit)
 
-        except Exception as e:
-            logger.warning(f"Pagination fetch failed at offset {offset}: {e}")
-            break
 
-    logger.info(f"fetch_polymarket_markets: got {len(all_markets)} unique markets")
-    return all_markets
+def _fetch_from_dflow_fallback(limit: int) -> List[Dict]:
+    """Fallback to DFlow API when Polymarket is rate limited."""
+    try:
+        from src.exchanges.dflow import fetch_dflow_markets
+        dflow_markets = fetch_dflow_markets(limit=limit)
+
+        # Convert DFlow format back to Polymarket-like format
+        result = []
+        for dm in dflow_markets:
+            if dm:
+                result.append({
+                    "id": dm.get("market_id"),
+                    "question": dm.get("question"),
+                    "outcomePrices": [str(dm.get("yes_price", 0.5)), str(dm.get("no_price", 0.5))],
+                    "volume": dm.get("volume", 0),
+                    "liquidity": dm.get("liquidity", 0),
+                    "_source": "dflow_fallback",
+                })
+        logger.info(f"DFlow fallback returned {len(result)} markets")
+        return result
+    except Exception as e:
+        logger.error(f"DFlow fallback failed: {e}")
+        return []
 
 
 def normalize_polymarket_market(m: Dict) -> Dict | None:

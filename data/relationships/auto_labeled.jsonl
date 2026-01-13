@@ -1,0 +1,1 @@
+{"market_a_id": "test_poly_123", "market_b_id": "test_kalshi_456", "platform_a": "polymarket", "platform_b": "kalshi", "relationship_type": "same_event", "confidence": 0.85, "discovered_at": 1768273718.1544983, "verified": false, "verified_by": "auto", "notes": "", "semantic_similarity": 0.85, "entity_overlap": 0.0, "time_overlap": 0.0, "historical_correlation": 0.0}

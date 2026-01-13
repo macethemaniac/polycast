@@ -1,13 +1,19 @@
 import time
+import logging
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import requests
 
 from . import Market, Outcome, OrderBook
+from src.utils.rate_limiter import get_with_retry, RateLimitError, check_rate_limit_cooldown
+
+logger = logging.getLogger(__name__)
 
 _MARKET_CACHE: Dict[str, Market] = {}
 _ORDERBOOK_CACHE: Dict[Tuple[str, str], OrderBook] = {}
 _MARKETS_META: Dict[str, Any] = {}
+_CACHE_TIMESTAMP: float = 0
+_CACHE_TTL: float = 300  # 5 minute cache TTL
 
 
 def _normalize_price(val: Optional[float]) -> Optional[float]:
@@ -57,24 +63,35 @@ def _build_market(obj: dict) -> Optional[Market]:
 
 def list_markets(limit: int = 100, return_debug: bool = False) -> Union[List[Market], Tuple[List[Market], Dict[str, Any]]]:
     """Fetch Polymarket markets as standardized Market objects."""
-    if _MARKET_CACHE:
+    global _CACHE_TIMESTAMP
+
+    # Return cached data if still valid
+    if _MARKET_CACHE and (time.time() - _CACHE_TIMESTAMP) < _CACHE_TTL:
         cached = list(_MARKET_CACHE.values())
         if return_debug:
-            meta = _MARKETS_META or {"attempts": [], "count": len(cached)}
+            meta = _MARKETS_META or {"attempts": [], "count": len(cached), "source": "cache"}
             return cached, meta
         return cached
+
     url = f"https://gamma-api.polymarket.com/markets?closed=false&limit={limit}"
     attempts = []
     markets: List[Market] = []
-    try:
-        max_retries = 3
-        for attempt in range(max_retries):
-            start = time.monotonic()
-            try:
-                resp = requests.get(url, timeout=10)
-                latency_ms = int((time.monotonic() - start) * 1000)
-                attempts.append({"url": url, "status_code": resp.status_code, "ok": resp.ok, "latency_ms": latency_ms})
-                resp.raise_for_status()
+    rate_limited = False
+
+    # Check if domain is rate limited
+    domain = "gamma-api.polymarket.com"
+    cooldown = check_rate_limit_cooldown(domain)
+    if cooldown and cooldown > 5:
+        attempts.append({"url": url, "status_code": 429, "ok": False, "error": f"Rate limited, {cooldown:.0f}s remaining"})
+        rate_limited = True
+    else:
+        start = time.monotonic()
+        try:
+            resp = get_with_retry(url, timeout=10, max_retries=3)
+            latency_ms = int((time.monotonic() - start) * 1000)
+            attempts.append({"url": url, "status_code": resp.status_code, "ok": resp.ok, "latency_ms": latency_ms})
+
+            if resp.ok:
                 data = resp.json()
                 container = []
                 if isinstance(data, dict):
@@ -89,24 +106,71 @@ def list_markets(limit: int = 100, return_debug: bool = False) -> Union[List[Mar
                                 break
                 elif isinstance(data, list):
                     container = data
+
                 for m in container:
                     market = _build_market(m)
                     if market:
                         markets.append(market)
                         _MARKET_CACHE[market.id] = market
-                break
-            except requests.RequestException as exc:
-                attempts[-1]["ok"] = False
-                attempts[-1]["error"] = str(exc)
-                if attempt == max_retries - 1:
-                    break
-                time.sleep(1)
-    finally:
-        _MARKETS_META["attempts"] = attempts
-        _MARKETS_META["count"] = len(markets)
+
+                if markets:
+                    _CACHE_TIMESTAMP = time.time()
+
+        except RateLimitError as exc:
+            latency_ms = int((time.monotonic() - start) * 1000)
+            attempts.append({"url": url, "status_code": 429, "ok": False, "error": str(exc), "latency_ms": latency_ms})
+            rate_limited = True
+            logger.warning(f"Polymarket rate limited: {exc}")
+
+        except requests.RequestException as exc:
+            latency_ms = int((time.monotonic() - start) * 1000)
+            attempts.append({"url": url, "status_code": None, "ok": False, "error": str(exc), "latency_ms": latency_ms})
+
+    # Fallback to DFlow if rate limited or no results
+    if (rate_limited or not markets) and not _MARKET_CACHE:
+        logger.info("Trying DFlow fallback for Polymarket markets...")
+        try:
+            from src.exchanges.dflow import fetch_dflow_markets
+            dflow_markets = fetch_dflow_markets(limit=limit)
+            for dm in dflow_markets:
+                if dm and dm.get("source", "").lower() in ("polymarket", "dflow"):
+                    market = _build_market_from_normalized(dm)
+                    if market:
+                        markets.append(market)
+                        _MARKET_CACHE[market.id] = market
+            if markets:
+                _CACHE_TIMESTAMP = time.time()
+                attempts.append({"url": "dflow_fallback", "ok": True, "count": len(markets)})
+        except Exception as e:
+            logger.error(f"DFlow fallback failed: {e}")
+            attempts.append({"url": "dflow_fallback", "ok": False, "error": str(e)})
+
+    _MARKETS_META["attempts"] = attempts
+    _MARKETS_META["count"] = len(markets)
+    _MARKETS_META["rate_limited"] = rate_limited
+
     if return_debug:
-        return markets, {"attempts": attempts, "count": len(markets)}
+        return markets, {"attempts": attempts, "count": len(markets), "rate_limited": rate_limited}
     return markets
+
+
+def _build_market_from_normalized(dm: Dict) -> Optional[Market]:
+    """Build Market from normalized DFlow dict."""
+    mid = dm.get("market_id")
+    if not mid:
+        return None
+
+    title = dm.get("question") or dm.get("title") or ""
+    yes_price = dm.get("yes_price")
+    no_price = dm.get("no_price")
+
+    outcomes = []
+    if yes_price is not None:
+        outcomes.append(Outcome(name="YES", best_bid=yes_price, best_ask=yes_price, raw=dm))
+    if no_price is not None:
+        outcomes.append(Outcome(name="NO", best_bid=no_price, best_ask=no_price, raw=dm))
+
+    return Market(id=str(mid), title=title, outcomes=outcomes, updated_ts=None, raw=dm)
 
 
 def get_orderbook(market_id: str, side: str) -> Optional[OrderBook]:
