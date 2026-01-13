@@ -104,3 +104,23 @@ def embed_texts(texts: List[str]) -> np.ndarray:
     store = EmbeddingStore()
     items = [(f"txt-{i}", t) for i, t in enumerate(texts)]
     return store.embed(items)
+
+
+# Add get_embedding method to EmbeddingStore for compatibility
+def _get_embedding(self, market_id: str, text: str) -> np.ndarray | None:
+    """Get embedding for a single market, creating if needed."""
+    h = _hash_text(text or "")
+    cached = self.cache.get(market_id)
+    if cached and cached.get("hash") == h and "vec" in cached:
+        try:
+            return np.array(cached["vec"], dtype=np.float32)
+        except Exception:
+            pass
+
+    # Generate new embedding
+    result = self.embed([(market_id, text)])
+    return result[0] if len(result) > 0 else None
+
+
+# Monkey-patch the method onto EmbeddingStore
+EmbeddingStore.get_embedding = _get_embedding
