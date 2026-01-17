@@ -62,3 +62,14 @@ config.local.py
 bot_token.txt
 token.txt
 
+# Local settings and generated artifacts
+.claude/settings.local.json
+nul
+data/cache/*.pkl
+data/cache/semantic_analysis.json
+data/historical/polymarket_markets.jsonl
+data/match_memory.json
+data/models/*.pkl
+data/monitoring/
+data/snapshots/
+data/training/*.jsonl
