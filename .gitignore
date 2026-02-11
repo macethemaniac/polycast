@@ -73,3 +73,5 @@ data/models/*.pkl
 data/monitoring/
 data/snapshots/
 data/training/*.jsonl
+
+.vercel

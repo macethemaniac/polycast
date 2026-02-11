@@ -44,7 +44,20 @@
       "Bash(git -C \"C:\\\\Users\\\\Admin\\\\Documents\\\\polycast\" commit -m \"$\\(cat <<''EOF''\nImprove market discovery and category search\n\n- Add GDELT as fallback trend source when Google Trends fails\n- Add /market category search \\(politics, crypto, sports, tech, economy, world, climate\\)\n- Fix keyword matching with word boundaries to avoid false positives\n- Lower trend similarity threshold \\(0.35 -> 0.25\\) for more matches\n- Add variety to /discover results with shuffle within confidence tiers\n- Reduce cache TTL to 30 seconds for fresher results\n- Fetch 500 markets instead of 200 for better category coverage\n- Update /help with category examples\nEOF\n\\)\")",
       "WebFetch(domain:pond.dflow.net)",
       "WebFetch(domain:t.co)",
-      "WebFetch(domain:arxiv.org)"
+      "WebFetch(domain:arxiv.org)",
+      "Bash(dir:*)",
+      "Bash(wc:*)",
+      "WebFetch(domain:web-7wvhhrhbf-macofweb3s-projects-fb08671b.vercel.app)",
+      "Bash(vercel:*)",
+      "Bash(gh repo list:*)",
+      "Bash(gh repo clone:*)",
+      "Bash(gh repo view:*)",
+      "Bash(render:*)",
+      "Bash(railway:*)",
+      "Bash(fly version:*)",
+      "Bash(flyctl version:*)",
+      "WebFetch(domain:lotusterminal.xyz)",
+      "WebFetch(domain:lotus-terminal.onrender.com)"
     ]
   }
 }

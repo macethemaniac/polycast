@@ -157,6 +157,7 @@ def find_cross_platform_pairs(history: Dict[str, List[Dict]]) -> List[Dict]:
 def generate_training_data(
     movements: List[Dict],
     pairs: List[Dict],
+    history: Dict[str, List[Dict]],
     min_samples: int = 500
 ) -> Tuple[List[Dict], List[int]]:
     """Generate labeled training data from real price movements."""
@@ -184,15 +185,42 @@ def generate_training_data(
         }
 
         # Label: 1 if betting in direction of movement would have been profitable
-        # If price went UP, buying YES at lower price was good
-        # If price went DOWN, buying NO at lower price was good
-        if abs(change) >= 0.1:
+        # Lower threshold to 5% for positive labels to capture more opportunities
+        if abs(change) >= 0.05:
             # Significant movement - this was a real opportunity
             opportunities.append(opp)
             labels.append(1)
-        elif abs(change) < 0.03:
-            # Small movement - not really an opportunity
-            opportunities.append(opp)
+
+    # Generate negative samples from stable markets (little to no movement)
+    stable_markets = []
+    for market_id, prices in history.items():
+        if len(prices) < 2:
+            continue
+        # Check max price swing across all snapshots
+        yes_prices = [p["yes_price"] for p in prices]
+        max_swing = max(yes_prices) - min(yes_prices)
+        if max_swing < 0.03:  # Stable market - no significant movement
+            latest = prices[-1]
+            stable_markets.append({
+                "market_id": market_id,
+                "platform": latest.get("platform"),
+                "question": latest.get("question", ""),
+                "category": latest.get("category", ""),
+                "yes_price": latest["yes_price"],
+                "no_price": 1.0 - latest["yes_price"],
+                "volume": latest.get("volume", 0),
+                "timestamp": latest.get("timestamp", time.time()),
+                "opportunity_type": "stable_market",
+                "price_change": 0,
+            })
+
+    # Sample negatives to roughly balance with positives
+    num_positives = len(opportunities)
+    num_negatives_needed = min(len(stable_markets), num_positives * 2)
+    if stable_markets and num_negatives_needed > 0:
+        sampled_negatives = random.sample(stable_markets, num_negatives_needed)
+        for neg in sampled_negatives:
+            opportunities.append(neg)
             labels.append(0)
 
     # From cross-platform pairs
@@ -336,7 +364,7 @@ def main():
 
     # Generate training data
     print("\nGenerating training data...")
-    opportunities, labels = generate_training_data(movements, pairs)
+    opportunities, labels = generate_training_data(movements, pairs, history)
     print(f"Training samples: {len(opportunities)}")
     print(f"Positive: {sum(labels)}, Negative: {len(labels) - sum(labels)}")
 
